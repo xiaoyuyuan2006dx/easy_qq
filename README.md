@@ -4,7 +4,7 @@
 - NapCat 主动连到本服务的 `/ws`
 - 浏览器打开本服务页面进行会话管理、收发消息、日志查看
 >[!note]
->需要先部署NapCat
+>需要先部署NapCat，https://napneko.github.io/
 ---
 
 ## 1. 环境与启动
