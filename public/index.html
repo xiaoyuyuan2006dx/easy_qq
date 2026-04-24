@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>easy_qq - NapCat Reverse WS</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header>
+    <span>easy_qq（NapCat反向WS）<span id="connBadge" class="badge">启动中</span></span>
+    <a id="repoLink" href="#" target="_blank" rel="noopener noreferrer" class="repo-link" title="Repository">
+      <span class="ui-icon ui-icon-github"></span>
+    </a>
+  </header>
+  <div id="mobileDesktopTip" class="mobile-tip">完整功能请在电脑浏览器打开</div>
+  <div class="tabs">
+    <button id="tabConsole" class="tab-btn active">消息控制台</button>
+    <button id="tabDevices" class="tab-btn">设备管理</button>
+    <button id="tabSettings" class="tab-btn">个性化设置</button>
+    <button id="tabLogs" class="tab-btn">日志</button>
+  </div>
+
+  <div id="pageConsole" class="page active">
+    <div class="main">
+      <div class="panel">
+        <div class="section-title">反向WS状态</div>
+        <div class="row">
+          <input id="profileName" placeholder="配置名（如 default / alice）" />
+          <button id="switchProfile" class="secondary">切换配置</button>
+        </div>
+        <div class="row"><button id="refreshHealth" class="secondary">刷新连接状态</button></div>
+        <div class="help" id="wsTip"></div>
+        <div class="help" id="wsTipIp"></div>
+        <div class="help" id="visitIp"></div>
+
+        <div class="section-title">会话管理</div>
+        <div class="row">
+          <button id="refreshList">刷新列表</button>
+          <button id="manageConv" class="secondary">管理会话</button>
+        </div>
+        <div class="row">
+          <select id="searchType"><option value="private">搜好友</option><option value="group">搜群</option></select>
+          <input id="searchKeyword" placeholder="输入ID或名称关键词" />
+        </div>
+        <div class="row"><button id="doSearch">搜索</button></div>
+        <div id="convList" class="list"></div>
+
+        <div class="section-title">白名单推送</div>
+        <div class="row">
+          <button id="clearWl" class="secondary">清空白名单</button>
+        </div>
+        <div id="wlList" class="list"></div>
+      </div>
+
+      <div class="panel chat-panel">
+        <div class="section-title">消息窗口</div>
+        <div class="chat-layout">
+          <div class="row msg-toolbar">
+            <select id="mobileConvSelect" class="mobile-only"></select>
+            <input id="activeConv" placeholder="当前会话：group:123 或 private:456" />
+            <input id="historyCount" type="number" min="1" max="200" value="30" />
+            <button id="pullHistory">手动拉取</button>
+            <button id="toggleRealtime" class="secondary">实时推送: 关闭</button>
+          </div>
+          <div id="msgArea" class="msg-area"></div>
+          <div class="composer">
+            <div class="section-title">发送消息</div>
+            <div class="row text-send-row">
+              <div class="text-send-wrap">
+                <textarea id="textMsg" placeholder="文本内容（可空）"></textarea>
+                <button id="sendMsg">发送到当前会话</button>
+              </div>
+            </div>
+            <div class="row media-row">
+              <input id="imageRef" placeholder="图片 URL（可空）" />
+              <button id="pickImage" type="button" class="icon-btn" title="选择图片" aria-label="选择图片"><span class="ui-icon ui-icon-image"></span></button>
+              <input id="fileRef" placeholder="文件 URL（可空）" />
+              <button id="pickFile" type="button" class="icon-btn" title="选择文件" aria-label="选择文件"><span class="ui-icon ui-icon-file"></span></button>
+            </div>
+            <input id="imagePicker" type="file" accept="image/*" hidden />
+            <input id="filePicker" type="file" hidden />
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="pageDevices" class="page">
+    <div class="main device-main">
+      <div class="panel">
+        <div class="section-title">访问设置</div>
+        <div class="help">服务固定监听 `0.0.0.0`，无需再维护设备地址规则。</div>
+        <div class="row"><input id="wsToken" placeholder="NapCat websocketClients token" /></div>
+        <div class="row"><button id="saveToken">保存反向WS Token</button></div>
+        <div id="accessTokenRow" class="row"><input id="accessToken" placeholder="全局访问token（可空，不填则无需token）" /></div>
+        <div id="accessTokenActionRow" class="row">
+          <button id="saveAccessToken">保存访问Token</button>
+          <button id="refreshDevices" class="secondary">刷新设备状态</button>
+        </div>
+        <div id="accessTokenHint" class="help"></div>
+      </div>
+
+      <div class="panel">
+        <div class="section-title">访问设备监控</div>
+        <div class="help">记录最近访问设备IP、请求地址、User-Agent、最后访问时间。</div>
+        <div id="deviceList" class="list device-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="pageSettings" class="page">
+    <div class="main settings-main">
+      <div class="panel">
+        <div class="section-title">个性化设置</div>
+        <div class="row">
+          <input id="bgImageUrl" placeholder="背景图 URL（可空）" />
+          <button id="pickBgImage" class="secondary" type="button">选择本机背景图</button>
+          <button id="saveBgImage">应用背景</button>
+        </div>
+        <input id="bgImagePicker" type="file" accept="image/*" hidden />
+        <div class="row">
+          <span class="help">点击颜色方块选取颜色</span>
+          <input id="selfMsgColorCode" readonly />
+          <input id="selfMsgColorPicker" type="color" class="color-preview color-input" title="选择颜色" />
+          <button id="saveSelfColor" class="secondary">应用我的消息背景色</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="pageLogs" class="page">
+    <div class="main logs-main">
+      <div class="panel logs-panel">
+        <div class="row logs-toolbar">
+          <label><input id="logDebug" type="checkbox" checked /> debug</label>
+          <label><input id="logInfo" type="checkbox" checked /> info</label>
+          <label><input id="logWarn" type="checkbox" checked /> warn</label>
+          <label><input id="logError" type="checkbox" checked /> error</label>
+          <label><input id="logSystem" type="checkbox" checked /> system</label>
+          <button id="refreshLogs" class="secondary">刷新</button>
+          <button id="exportLogs">导出日志</button>
+        </div>
+        <div id="logsArea" class="logs-area"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+  <div id="authModal" class="img-modal">
+    <div class="conv-modal-content auth-modal-content">
+      <div class="section-title">访问校验</div>
+      <div class="help">请输入访问Token后进入页面。</div>
+      <div class="row">
+        <input id="authTokenInput" type="password" placeholder="访问Token" />
+        <button id="authLoginBtn">进入</button>
+      </div>
+      <div id="authTip" class="help"></div>
+    </div>
+  </div>
+  <div id="convManageModal" class="img-modal">
+    <div class="conv-modal-content">
+      <div class="conv-modal-header">
+        <div class="section-title">管理会话（左侧候选 / 右侧显示）</div>
+        <button id="convManageClose" class="secondary">关闭</button>
+      </div>
+      <div class="row conv-search-row">
+        <input id="convSearchKeyword" placeholder="搜索会话：输入完整9或10位ID或名称关键词" />
+        <button id="convSearchBtn">搜索</button>
+        <button id="convSearchClear" class="secondary">清除高亮</button>
+      </div>
+      <div class="conv-manage-grid">
+        <div class="panel">
+          <div class="section-title">候选会话（已拉取）</div>
+          <div id="allConvList" class="list conv-manage-list"></div>
+        </div>
+        <div class="panel">
+          <div class="section-title">显示会话（左侧栏）</div>
+          <div id="selectedConvList" class="list conv-manage-list"></div>
+        </div>
+      </div>
+      <div class="row">
+        <button id="convManageSave">保存并应用</button>
+      </div>
+    </div>
+  </div>
+  <div id="imgModal" class="img-modal">
+    <div class="img-modal-content">
+      <button id="imgModalClose" class="img-close-btn">关闭</button>
+      <img id="imgModalView" alt="preview" referrerpolicy="no-referrer" />
+    </div>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

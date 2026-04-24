@@ -1,0 +1,9 @@
+{
+  "name": "easy_qq",
+  "version": "1.0.1",
+  "private": true,
+  "description": "Simple web UI for NapCat HTTP/WS",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
