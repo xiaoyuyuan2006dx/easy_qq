@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
-const { URL } = require('url');
+const { URL, pathToFileURL } = require('url');
 
 const PORT = 18080;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -14,6 +14,10 @@ const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 const EXPORT_DIR = path.join(DATA_DIR, 'exports');
 const FIXED_LOCAL_RULE = { host: '127.0.0.1', port: PORT, token: '', fixed: true };
 const FIXED_GLOBAL_RULE = { host: '0.0.0.0', port: PORT, token: '', fixed: true };
+const VERSION_DATE = '2026-05-13';
+const VERSION_REVISION = 12;
+const VERSION_STAMP = `v${VERSION_DATE}.${VERSION_REVISION}`;
+let PINYIN_DICT = {};
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -25,6 +29,13 @@ const MIME = {
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 if (!fs.existsSync(EXPORT_DIR)) fs.mkdirSync(EXPORT_DIR, { recursive: true });
+try {
+  const raw = fs.readFileSync(path.join(PUBLIC_DIR, 'pinyin_dict.json'), 'utf8');
+  const parsed = JSON.parse(raw);
+  PINYIN_DICT = parsed && typeof parsed === 'object' ? parsed : {};
+} catch {
+  PINYIN_DICT = {};
+}
 
 const state = loadState();
 const sseClients = new Set();
@@ -46,6 +57,78 @@ function sanitizeFileName(name, fallback = 'file.bin') {
   const base = String(name || '').split('/').pop().split('\\').pop().trim();
   const safe = base.replace(/[^\w.\-\u4e00-\u9fa5]/g, '_');
   return safe || fallback;
+}
+
+function isLikelyHashFileName(name) {
+  const value = String(name || '').trim();
+  if (!value) return false;
+  if (value.includes('.')) return false;
+  return /^[a-f0-9]{40,}$/i.test(value);
+}
+
+function normalizeAsciiFileName(name, fallback = `file_${Date.now()}`) {
+  const raw = String(name || '').trim();
+  const safe = sanitizeFileName(raw, fallback);
+  const dot = safe.lastIndexOf('.');
+  const base = dot > 0 ? safe.slice(0, dot) : safe;
+  const ext = dot > 0 ? safe.slice(dot) : '';
+  const pinyinBase = Array.from(base).map((ch) => {
+    if (/[\x00-\x7F]/.test(ch)) return ch;
+    return PINYIN_DICT[ch] || 'Zi';
+  }).join('_');
+  const asciiBase = pinyinBase
+    .replace(/[^\x00-\x7F]+/g, '_')
+    .replace(/[^A-Za-z0-9._-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  const finalBase = String(asciiBase || '')
+    .split(/[_\-\s]+/)
+    .filter(Boolean)
+    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+    .join('') || `File${Date.now()}`;
+  return `${finalBase}${ext}`.slice(0, 180);
+}
+
+function hasNonAscii(text) {
+  return /[^\x00-\x7F]/.test(String(text || ''));
+}
+
+function inferFileNameFromRef(ref, fallback = '') {
+  const value = String(ref || '').replace(/&amp;/g, '&').trim();
+  if (!value) return fallback;
+  try {
+    if (/^https?:\/\//i.test(value)) {
+      const parsed = new URL(value);
+      const qName = String(
+        parsed.searchParams.get('fname')
+        || parsed.searchParams.get('filename')
+        || parsed.searchParams.get('name')
+        || '',
+      ).trim();
+      if (qName) return sanitizeFileName(decodeURIComponent(qName), fallback || 'file.bin');
+      const tail = decodeURIComponent(path.basename(parsed.pathname || '').trim());
+      if (tail) {
+        const safeTail = sanitizeFileName(tail, fallback || 'file.bin');
+        if (!isLikelyHashFileName(safeTail)) return safeTail;
+      }
+      return fallback;
+    }
+  } catch {}
+  const tail = String(value.split('?')[0] || '').trim();
+  const safeTail = sanitizeFileName(path.basename(tail), fallback || 'file.bin');
+  if (isLikelyHashFileName(safeTail)) return fallback;
+  return safeTail;
+}
+
+function toFileUrl(localPath) {
+  const norm = String(localPath || '').trim();
+  if (!norm) return '';
+  try {
+    return pathToFileURL(norm).toString();
+  } catch {
+    const unixPath = norm.replace(/\\/g, '/');
+    return unixPath.startsWith('/') ? `file://${unixPath}` : `file:///${unixPath}`;
+  }
 }
 
 function saveUploadStream(req, filePath, maxBytes = 120 * 1024 * 1024) {
@@ -186,6 +269,24 @@ async function downloadImage(targetUrl) {
   return downloadByHttp(targetUrl);
 }
 
+async function downloadBinary(targetUrl) {
+  if (typeof fetch === 'function') {
+    const upstream = await fetch(targetUrl, {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (easy_qq file-proxy)',
+        Accept: '*/*',
+      },
+    });
+    if (!upstream.ok) throw new Error(`upstream ${upstream.status}`);
+    return {
+      contentType: upstream.headers.get('content-type') || 'application/octet-stream',
+      buffer: Buffer.from(await upstream.arrayBuffer()),
+    };
+  }
+  return downloadByHttp(targetUrl);
+}
+
 function defaultState() {
   return {
     wsToken: 'napcat_ws_token',
@@ -294,6 +395,7 @@ function normalizeSegmentsToText(segments, raw) {
   return segments.map((seg) => {
     if (seg.type === 'text') return (seg.data && seg.data.text) || '';
     if (seg.type === 'at') return `@${(seg.data && (seg.data.qq || seg.data.id)) || ''}`;
+    if (seg.type === 'reply') return '[回复]';
     if (seg.type === 'image') return '[图片]';
     if (seg.type === 'file') return '[文件]';
     return `[${seg.type || 'segment'}]`;
@@ -314,7 +416,21 @@ function parseCqData(rawData) {
 }
 
 function normalizeIncomingSegments(message, rawMessage) {
-  if (Array.isArray(message)) return message;
+  if (Array.isArray(message)) {
+    return message.map((seg) => {
+      if (!seg || typeof seg !== 'object') return { type: 'segment', data: {} };
+      const type = String(seg.type || 'segment').toLowerCase();
+      const data = seg.data && typeof seg.data === 'object' ? { ...seg.data } : {};
+      if (type === 'file' && !String(data.name || '').trim()) {
+        const inferred = inferFileNameFromRef(
+          data.fname || data.filename || data.file_name || data.url || data.file,
+          '',
+        );
+        if (inferred) data.name = inferred;
+      }
+      return { type, data };
+    });
+  }
   const raw = String(rawMessage || '');
   if (!raw) return [];
   const out = [];
@@ -326,6 +442,13 @@ function normalizeIncomingSegments(message, rawMessage) {
     if (before) out.push({ type: 'text', data: { text: before } });
     const cqType = String(match[1] || '').toLowerCase();
     const data = parseCqData(match[2] || '');
+    if (cqType === 'file' && !String(data.name || '').trim()) {
+      const inferred = inferFileNameFromRef(
+        data.fname || data.filename || data.file_name || data.url || data.file,
+        '',
+      );
+      if (inferred) data.name = inferred;
+    }
     if (cqType === 'image') out.push({ type: 'image', data });
     else if (cqType === 'file') out.push({ type: 'file', data });
     else out.push({ type: cqType || 'segment', data });
@@ -471,23 +594,42 @@ function handleNapcatData(text) {
 }
 
 function buildUploadFileParams(type, id, fileSeg) {
-  const source = String((fileSeg && fileSeg.data && fileSeg.data.file) || '').trim();
+  const source = String((fileSeg && fileSeg.data && fileSeg.data.file) || '').replace(/&amp;/g, '&').trim();
   if (!source) return null;
-  let name = String((fileSeg && fileSeg.data && fileSeg.data.name) || '').trim();
-  if (!name) {
-    try {
-      if (/^https?:\/\//i.test(source)) {
-        const pathname = new URL(source).pathname || '';
-        name = path.basename(pathname) || `file_${Date.now()}`;
-      } else {
-        name = path.basename(source) || `file_${Date.now()}`;
+  let resolvedSource = source;
+  let localPath = '';
+  if (source.startsWith('/files/')) {
+    const safeName = sanitizeFileName(source.slice('/files/'.length), '');
+    if (safeName) {
+      const localFilePath = path.join(UPLOAD_DIR, safeName);
+      if (localFilePath.startsWith(UPLOAD_DIR) && fs.existsSync(localFilePath)) {
+        localPath = localFilePath;
       }
-    } catch {
-      name = `file_${Date.now()}`;
     }
   }
-  if (type === 'group') return { action: 'upload_group_file', params: { group_id: Number(id), file: source, name } };
-  return { action: 'upload_private_file', params: { user_id: Number(id), file: source, name } };
+  if (/^https?:\/\//i.test(source)) {
+    resolvedSource = source;
+  } else if (source.startsWith('/files/')) {
+    resolvedSource = source;
+  } else if (path.isAbsolute(resolvedSource) && fs.existsSync(resolvedSource)) {
+    localPath = resolvedSource;
+    resolvedSource = toFileUrl(resolvedSource);
+  }
+  let originalName = String((fileSeg && fileSeg.data && fileSeg.data.name) || '').trim();
+  if (!originalName) {
+    const dataFile = String((fileSeg && fileSeg.data && fileSeg.data.file) || '').trim();
+    const prefer = dataFile && !/^https?:\/\//i.test(dataFile) ? dataFile : source;
+    originalName = inferFileNameFromRef(prefer, `file_${Date.now()}`);
+  }
+  const safeOriginal = sanitizeFileName(originalName, `file_${Date.now()}`);
+  const asciiName = normalizeAsciiFileName(safeOriginal, `file_${Date.now()}`);
+  const encodedName = hasNonAscii(safeOriginal) ? encodeURIComponent(safeOriginal) : '';
+  const nameVariants = hasNonAscii(safeOriginal)
+    ? Array.from(new Set([encodedName, safeOriginal, asciiName].filter(Boolean)))
+    : Array.from(new Set([safeOriginal, asciiName].filter(Boolean)));
+  const name = nameVariants[0] || asciiName || `file_${Date.now()}`;
+  if (type === 'group') return { action: 'upload_group_file', params: { group_id: Number(id), file: resolvedSource, name }, localPath, nameVariants };
+  return { action: 'upload_private_file', params: { user_id: Number(id), file: resolvedSource, name }, localPath, nameVariants };
 }
 
 function callOneBot(action, params = {}) {
@@ -592,6 +734,14 @@ function parseHost(req) {
     return { host, port: Number.isInteger(port) && port > 0 ? port : fallbackPort };
   }
   return { host: hostHeader, port: fallbackPort };
+}
+
+function guessFileNameFromData(data = {}, fallback = 'file.bin') {
+  const direct = String(data.name || data.fname || data.filename || data.file_name || '').trim();
+  if (direct) return sanitizeFileName(direct, fallback);
+  const file = String(data.file || '').trim();
+  if (file && !/^https?:\/\//i.test(file)) return sanitizeFileName(file, fallback);
+  return inferFileNameFromRef(String(data.url || data.file || '').trim(), fallback);
 }
 
 function normalizeHost(host) {
@@ -822,6 +972,7 @@ const server = http.createServer(async (req, res) => {
         clientIp,
         clientIpRaw: String(req.socket.remoteAddress || ''),
         wsToken: state.wsToken,
+        versionStamp: VERSION_STAMP,
         accessToken: tokenManageAllowed ? state.accessToken : '',
         tokenManageAllowed,
         uiSettings: state.uiSettings || { bgImageUrl: '', selfMsgColor: '#dbeafe' },
@@ -1035,7 +1186,7 @@ const server = http.createServer(async (req, res) => {
           type,
           id: String(id),
           user_id: String(napcatInfo.selfId || ''),
-          sender: 'me',
+          sender: String(napcatInfo.selfId || 'self'),
           segments: msgSegs,
           text: normalizeSegmentsToText(msgSegs),
         });
@@ -1044,10 +1195,57 @@ const server = http.createServer(async (req, res) => {
       for (const fileSeg of fileSegs) {
         const upload = buildUploadFileParams(type, id, fileSeg);
         if (!upload) continue;
+        const displayData = fileSeg && fileSeg.data && typeof fileSeg.data === 'object'
+          ? { ...fileSeg.data }
+          : { file: upload.params.file, name: upload.params.name };
         let rpcFile = null;
         let lastErr = null;
+        const fileData = fileSeg && fileSeg.data && typeof fileSeg.data === 'object' ? fileSeg.data : {};
+        const originFileId = String(fileData.file_id || fileData.fileId || fileData.fileid || '').trim();
+        appendAuditLog('info', 'file_send_prepare', req, {
+          type,
+          id: String(id),
+          name: upload.params.name,
+          source: String((fileData.file || '')).trim(),
+          sourceUrl: String((fileData.url || '')).trim(),
+          fileId: originFileId,
+        });
         const fileSendAttempts = [];
-        fileSendAttempts.push({ action: upload.action, params: upload.params });
+        const nameCandidates = Array.isArray(upload.nameVariants) && upload.nameVariants.length
+          ? upload.nameVariants
+          : [String(upload.params.name || '').trim()].filter(Boolean);
+        const fileCandidates = [];
+        fileCandidates.push(String(upload.params.file || ''));
+        if (upload.localPath) {
+          fileCandidates.push(String(upload.localPath));
+          fileCandidates.push(toFileUrl(upload.localPath));
+          fileCandidates.push(String(upload.localPath).replace(/\\/g, '/'));
+        }
+        const seenFileRef = new Set();
+        for (const fileRefRaw of fileCandidates) {
+          const fileRef = String(fileRefRaw || '').trim();
+          if (!fileRef || seenFileRef.has(fileRef)) continue;
+          seenFileRef.add(fileRef);
+          for (const nameCandidateRaw of nameCandidates) {
+            const nameCandidate = String(nameCandidateRaw || '').trim();
+            if (!nameCandidate) continue;
+            fileSendAttempts.push({
+              action: upload.action,
+              params: { ...upload.params, file: fileRef, name: nameCandidate },
+            });
+          }
+        }
+        appendAuditLog('info', 'file_send_attempt_plan', req, {
+          type,
+          id: String(id),
+          name: upload.params.name,
+          fileId: originFileId,
+          attempts: fileSendAttempts.map((x) => ({
+            action: x.action,
+            file: String(x.params && x.params.file || ''),
+            name: String(x.params && x.params.name || ''),
+          })),
+        });
         if (type === 'group') {
           fileSendAttempts.push({
             action: 'send_group_msg',
@@ -1067,10 +1265,39 @@ const server = http.createServer(async (req, res) => {
         }
         for (const attempt of fileSendAttempts) {
           try {
+            appendAuditLog('info', 'file_send_try', req, {
+              type,
+              id: String(id),
+              action: attempt.action,
+              name: upload.params.name,
+              fileId: originFileId,
+              file: String((attempt.params && attempt.params.file) || ''),
+              name: String((attempt.params && attempt.params.name) || ''),
+            });
             rpcFile = await callOneBot(attempt.action, attempt.params);
+            appendAuditLog('info', 'file_send_success', req, {
+              type,
+              id: String(id),
+              action: attempt.action,
+              name: upload.params.name,
+              fileId: originFileId,
+              file: String((attempt.params && attempt.params.file) || ''),
+              name: String((attempt.params && attempt.params.name) || ''),
+              retcode: Number((rpcFile && rpcFile.retcode) || 0),
+            });
             break;
           } catch (err) {
             lastErr = err;
+            appendAuditLog('error', 'file_send_attempt_failed', req, {
+              type,
+              id: String(id),
+              action: attempt.action,
+              name: upload.params.name,
+              fileId: originFileId,
+              file: String((attempt.params && attempt.params.file) || ''),
+              name: String((attempt.params && attempt.params.name) || ''),
+              error: String((err && err.message) || err || ''),
+            });
           }
         }
         if (!rpcFile) throw (lastErr || new Error('文件发送失败'));
@@ -1081,8 +1308,8 @@ const server = http.createServer(async (req, res) => {
           type,
           id: String(id),
           user_id: String(napcatInfo.selfId || ''),
-          sender: 'me',
-          segments: [{ type: 'file', data: { file: upload.params.file, name: upload.params.name } }],
+          sender: String(napcatInfo.selfId || 'self'),
+          segments: [{ type: 'file', data: displayData }],
           text: '[文件]',
         });
       }
@@ -1123,6 +1350,49 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, url });
     }
 
+    if (req.method === 'GET' && pathname === '/backend/files/download') {
+      const urlObj = new URL(req.url, `http://${req.headers.host || `127.0.0.1:${PORT}`}`);
+      const type = String(urlObj.searchParams.get('type') || '').trim();
+      const id = String(urlObj.searchParams.get('id') || '').trim();
+      if (!(type === 'group' || type === 'private') || !id) {
+        return json(res, 400, { error: 'invalid conversation' });
+      }
+      const data = {
+        file_id: String(urlObj.searchParams.get('file_id') || '').trim(),
+        fileId: String(urlObj.searchParams.get('fileId') || '').trim(),
+        fileid: String(urlObj.searchParams.get('fileid') || '').trim(),
+        busid: String(urlObj.searchParams.get('busid') || '').trim(),
+        file_busid: String(urlObj.searchParams.get('file_busid') || '').trim(),
+        fileBusid: String(urlObj.searchParams.get('fileBusid') || '').trim(),
+        file: String(urlObj.searchParams.get('file') || '').trim(),
+        url: String(urlObj.searchParams.get('url') || '').trim(),
+        name: String(urlObj.searchParams.get('name') || '').trim(),
+      };
+      const fileName = guessFileNameFromData(data, `file_${Date.now()}.bin`);
+      const resolved = await resolveFileUrl(type, id, data);
+      const downloaded = await downloadBinary(resolved);
+      appendAuditLog('info', 'file_download_proxy', req, {
+        type, id: String(id), fileId: String(data.file_id || data.fileId || data.fileid || ''),
+        name: fileName, resolvedUrlHost: (() => { try { return new URL(resolved).host; } catch { return ''; } })(),
+      });
+      appendAuditLog('info', 'file_download_done', req, {
+        type,
+        id: String(id),
+        fileId: String(data.file_id || data.fileId || data.fileid || ''),
+        name: fileName,
+        bytes: Number((downloaded && downloaded.buffer && downloaded.buffer.length) || 0),
+        contentType: String((downloaded && downloaded.contentType) || 'application/octet-stream'),
+        disposition: `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+      });
+      res.writeHead(200, {
+        'Content-Type': downloaded.contentType || 'application/octet-stream',
+        'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+        'Cache-Control': 'no-store',
+      });
+      res.end(downloaded.buffer);
+      return;
+    }
+
     if (req.method === 'POST' && pathname === '/backend/logs/export') {
       const body = await readBody(req);
       const logs = Array.isArray(body.logs) ? body.logs : [];
@@ -1154,6 +1424,13 @@ const server = http.createServer(async (req, res) => {
 
     return serveStatic(req, res);
   } catch (err) {
+    try {
+      appendAuditLog('error', 'http_request_failed', req, {
+        method: String(req.method || ''),
+        url: String(req.url || ''),
+        error: String((err && err.message) || err || ''),
+      });
+    } catch {}
     return json(res, 500, { error: err.message || 'internal error' });
   }
 });

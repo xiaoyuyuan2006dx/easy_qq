@@ -5,5 +5,8 @@
   "description": "Simple web UI for NapCat HTTP/WS",
   "scripts": {
     "start": "node server.js"
+  },
+  "dependencies": {
+    "pinyin-pro": "3.28.1"
   }
 }

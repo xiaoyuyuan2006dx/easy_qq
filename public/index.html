@@ -9,6 +9,11 @@
 <body>
   <header>
     <span>easy_qq（NapCat反向WS）<span id="connBadge" class="badge">启动中</span></span>
+    <div id="selfInfo" class="self-info">
+      <img id="selfAvatar" class="self-avatar" alt="avatar" />
+      <span id="selfQq">QQ: -</span>
+      <span id="versionStamp" class="version-stamp">-</span>
+    </div>
     <a id="repoLink" href="#" target="_blank" rel="noopener noreferrer" class="repo-link" title="Repository">
       <span class="ui-icon ui-icon-github"></span>
     </a>
@@ -25,10 +30,6 @@
     <div class="main">
       <div class="panel">
         <div class="section-title">反向WS状态</div>
-        <div class="row">
-          <input id="profileName" placeholder="配置名（如 default / alice）" />
-          <button id="switchProfile" class="secondary">切换配置</button>
-        </div>
         <div class="row"><button id="refreshHealth" class="secondary">刷新连接状态</button></div>
         <div class="help" id="wsTip"></div>
         <div class="help" id="wsTipIp"></div>
@@ -66,17 +67,18 @@
           <div id="msgArea" class="msg-area"></div>
           <div class="composer">
             <div class="section-title">发送消息</div>
+            <div class="row media-row">
+              <input id="atRef" placeholder="@QQ号（可空，仅群聊生效）" />
+              <input id="replyRef" placeholder="回复消息ID（可空）" />
+              <button id="pickImage" type="button" class="icon-btn" title="选择图片" aria-label="选择图片"><span class="ui-icon ui-icon-image"></span></button>
+              <button id="pickFile" type="button" class="icon-btn" title="选择文件" aria-label="选择文件"><span class="ui-icon ui-icon-file"></span></button>
+              <input id="selectedMediaInfo" placeholder="未选择文件" readonly />
+            </div>
             <div class="row text-send-row">
               <div class="text-send-wrap">
                 <textarea id="textMsg" placeholder="文本内容（可空）"></textarea>
                 <button id="sendMsg">发送到当前会话</button>
               </div>
-            </div>
-            <div class="row media-row">
-              <input id="imageRef" placeholder="图片 URL（可空）" />
-              <button id="pickImage" type="button" class="icon-btn" title="选择图片" aria-label="选择图片"><span class="ui-icon ui-icon-image"></span></button>
-              <input id="fileRef" placeholder="文件 URL（可空）" />
-              <button id="pickFile" type="button" class="icon-btn" title="选择文件" aria-label="选择文件"><span class="ui-icon ui-icon-file"></span></button>
             </div>
             <input id="imagePicker" type="file" accept="image/*" hidden />
             <input id="filePicker" type="file" hidden />

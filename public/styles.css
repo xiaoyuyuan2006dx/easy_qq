@@ -26,7 +26,11 @@ header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
 }
+.self-info { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: #e5e7eb; margin-left: auto; }
+.self-avatar { width: 24px; height: 24px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.3); background: rgba(255,255,255,0.08); object-fit: cover; }
+.version-stamp { opacity: 0.85; }
 .tabs {
   display: flex;
   gap: 8px;
@@ -61,7 +65,7 @@ header {
   height: calc(100vh - 92px);
 }
 .device-main {
-  grid-template-columns: 420px 1fr;
+  grid-template-columns: 320px 1fr;
 }
 .settings-main {
   display: flex;
@@ -172,6 +176,8 @@ label { font-size: 14px; }
   align-items: center;
   gap: 6px;
 }
+#atRef, #replyRef { flex: 0 0 170px; max-width: 170px; }
+#selectedMediaInfo { flex: 1 1 auto; min-width: 180px; background: #f9fafb; color: #374151; }
 .text-send-row {
   margin-bottom: 6px;
 }
@@ -180,18 +186,16 @@ label { font-size: 14px; }
   width: 100%;
 }
 .text-send-wrap textarea {
-  min-height: 92px;
+  min-height: 36px;
+  height: 36px;
+  resize: none;
   padding-right: 160px;
 }
 .text-send-wrap #sendMsg {
   position: absolute;
   right: 8px;
-  bottom: 8px;
-}
-.media-row #imageRef,
-.media-row #fileRef {
-  flex: 1 1 0;
-  min-width: 0;
+  top: 50%;
+  transform: translateY(-50%);
 }
 .icon-btn {
   background: transparent !important;
@@ -207,6 +211,7 @@ label { font-size: 14px; }
   font-size: 16px;
   line-height: 1;
 }
+.media-row .icon-btn { margin-left: 0; }
 .icon-btn:hover {
   background: #f9fafb !important;
 }
@@ -274,7 +279,7 @@ label { font-size: 14px; }
 }
 .toast {
   position: fixed;
-  right: 16px;
+  left: 16px;
   bottom: 16px;
   min-width: 180px;
   max-width: 360px;
@@ -395,17 +400,28 @@ body.auth-locked #authModal {
   flex-wrap: wrap;
 }
 .logs-area {
-  border: 1px solid #e5e7eb;
+  border: 1px solid #1f2937;
   border-radius: 6px;
-  background: #fff;
+  background: #0b1220;
+  color: #e5e7eb;
   height: calc(100vh - 260px);
   overflow: auto;
   padding: 10px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  font-size: 13px;
-  line-height: 1.5;
-  white-space: pre-wrap;
 }
+.log-line {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 4px 6px;
+  border-left: 3px solid transparent;
+  border-radius: 4px;
+  margin-bottom: 4px;
+}
+.log-debug { color: #93c5fd; border-left-color: #3b82f6; background: rgba(59,130,246,0.12); }
+.log-info { color: #bbf7d0; border-left-color: #22c55e; background: rgba(34,197,94,0.12); }
+.log-warn { color: #fde68a; border-left-color: #f59e0b; background: rgba(245,158,11,0.12); }
+.log-error { color: #fecaca; border-left-color: #ef4444; background: rgba(239,68,68,0.12); }
+.log-system { color: #ddd6fe; border-left-color: #8b5cf6; background: rgba(139,92,246,0.12); }
 .color-preview {
   width: 30px;
   min-width: 30px;
@@ -452,7 +468,7 @@ body.auth-locked #authModal {
   #mobileConvSelect {
     width: 100%;
   }
-  #activeConv, #historyCount, #pullHistory, #toggleRealtime, #imageRef, #pickImage, #fileRef {
+  #activeConv, #historyCount, #pullHistory, #toggleRealtime, #pickImage, #pickFile {
     display: none !important;
   }
   .media-row {

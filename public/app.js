@@ -8,12 +8,12 @@ const state = {
   wsToken: '',
   accessToken: '',
   unread: {},
-  profile: 'default',
-  profiles: {},
   devices: [],
   activeTab: 'console',
   localIp: '',
   pendingFileName: '',
+  pendingImageRef: '',
+  pendingFileRef: '',
   manageDraftKeys: [],
   manageSearchKeys: [],
   logs: [],
@@ -31,11 +31,27 @@ const UI_CACHE_KEY = 'easyqq_ui_cache';
 const URL_TOKEN = String(new URLSearchParams(window.location.search).get('access_token') || '').trim();
 const REPOSITORY_URL = 'https://github.com/xiaoyuyuan2006dx/easy_qq';
 const GROUP_REMOVED_HINT = '你已被移出群聊';
-const SIMPLE_PINYIN_MAP = {
-  数: 'shu', 据: 'ju', 卸: 'xie', 载: 'zai', 与: 'yu', 压: 'ya', 缩: 'suo', 技: 'ji', 术: 'shu', 汇: 'hui',
-  报: 'bao', 简: 'jian', 约: 'yue', 工: 'gong', 科: 'ke', 风: 'feng', 文: 'wen', 件: 'jian', 图: 'tu', 片: 'pian',
-  测: 'ce', 试: 'shi', 群: 'qun', 聊: 'liao', 私: 'si', 好: 'hao', 友: 'you', 会: 'hui', 话: 'hua',
-};
+let PINYIN_DICT = {};
+
+function toTitleCasePinyinWord(raw) {
+  const text = String(raw || '');
+  if (!text) return '';
+  return text.split(/[_\-\s]+/).filter(Boolean).map((part) => {
+    const lower = part.toLowerCase();
+    return `${lower.slice(0, 1).toUpperCase()}${lower.slice(1)}`;
+  }).join('');
+}
+
+async function loadPinyinDict() {
+  try {
+    const resp = await fetch(withAccessToken('/pinyin_dict.json'), { headers: { ...buildAuthHeaders() } });
+    if (!resp.ok) return;
+    const parsed = await resp.json().catch(() => ({}));
+    PINYIN_DICT = parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (_) {
+    PINYIN_DICT = {};
+  }
+}
 
 function withAccessToken(path) {
   const token = getClientToken();
@@ -199,64 +215,27 @@ async function runAction(btnId, action, pendingText = '处理中...') {
 }
 
 async function loadProfiles() {
-  let loaded = false;
   try {
-    const res = await api('/backend/profiles');
-    state.profiles = res && res.data && typeof res.data === 'object' ? res.data : {};
-    state.profile = String((res && res.activeProfile) || 'default');
-    loaded = true;
-  } catch (_) {
-    loaded = false;
-  }
-  if (!loaded) {
-    try {
-      const raw = localStorage.getItem('easyqq_profiles');
-      state.profiles = raw ? JSON.parse(raw) : {};
-    } catch {
-      state.profiles = {};
-    }
-    state.profile = localStorage.getItem('easyqq_active_profile') || 'default';
-  }
-  if (!state.profiles.default) {
-    state.profiles.default = { whitelist: [], realtimeSet: {}, unread: {}, conversationKeys: [] };
-  }
-  if (!state.profiles[state.profile]) {
-    state.profiles[state.profile] = { whitelist: [], realtimeSet: {}, unread: {}, conversationKeys: [] };
-    state.profile = 'default';
-  }
-}
-
-function saveProfiles() {
-  localStorage.setItem('easyqq_profiles', JSON.stringify(state.profiles));
-  localStorage.setItem('easyqq_active_profile', state.profile);
-  api('/backend/profiles', 'POST', {
-    profiles: state.profiles,
-    activeProfile: state.profile,
-  }).catch(() => {});
-}
-
-function currentProfileData() {
-  return state.profiles[state.profile] || { whitelist: [], realtimeSet: {}, unread: {}, conversationKeys: [] };
+    const raw = localStorage.getItem('easyqq_single_profile');
+    const parsed = raw ? JSON.parse(raw) : {};
+    state.whitelist = Array.isArray(parsed.whitelist) ? parsed.whitelist : [];
+    state.unread = parsed.unread && typeof parsed.unread === 'object' ? parsed.unread : {};
+    state.visibleConvKeys = Array.isArray(parsed.conversationKeys) ? parsed.conversationKeys.map(String) : [];
+  } catch (_) {}
 }
 
 function applyProfile() {
-  const p = currentProfileData();
-  state.whitelist = Array.isArray(p.whitelist) ? p.whitelist : [];
-  state.unread = p.unread && typeof p.unread === 'object' ? p.unread : {};
-  state.visibleConvKeys = Array.isArray(p.conversationKeys) ? p.conversationKeys.map(String) : [];
-  el('profileName').value = state.profile;
   renderWhitelist();
   renderConversations();
   updateRealtimeButton();
 }
 
 function saveProfileData() {
-  const p = currentProfileData();
-  p.whitelist = state.whitelist;
-  p.unread = state.unread;
-  p.conversationKeys = state.visibleConvKeys;
-  state.profiles[state.profile] = p;
-  saveProfiles();
+  localStorage.setItem('easyqq_single_profile', JSON.stringify({
+    whitelist: state.whitelist,
+    unread: state.unread,
+    conversationKeys: state.visibleConvKeys,
+  }));
 }
 
 function isWhitelisted(type, id) {
@@ -382,6 +361,16 @@ function renderMessages() {
   const box = el('msgArea');
   box.innerHTML = '';
   const list = state.messages.get(state.activeConv) || [];
+  const messageMap = new Map();
+  const userNameMap = new Map();
+  list.forEach((m) => {
+    if (m && m.message_id !== undefined && m.message_id !== null) {
+      messageMap.set(String(m.message_id), m);
+    }
+    const uid = String((m && m.user_id) || '').trim();
+    const uname = String(normalizedSenderName(m) || '').trim();
+    if (uid && uname && !userNameMap.has(uid)) userNameMap.set(uid, uname);
+  });
   list.forEach((m) => {
     if (!state.selfNickname && String(m.sender || '').trim() && String(m.sender || '').toLowerCase() !== 'me' && isSelfMessage(m)) {
       state.selfNickname = String(m.sender || '').trim();
@@ -394,9 +383,31 @@ function renderMessages() {
     const timeText = new Date((m.time || Date.now() / 1000) * 1000).toLocaleString();
     const prefix = document.createElement('span');
     prefix.className = 'msg-prefix';
-    prefix.textContent = `[${timeText}] ${senderName}: `;
+    const timeLink = document.createElement('a');
+    timeLink.href = '#';
+    timeLink.textContent = `[${timeText}]`;
+    timeLink.onclick = (evt) => {
+      evt.preventDefault();
+      if (!m || !m.message_id) return;
+      el('replyRef').value = String(m.message_id || '');
+      notify(`已设置回复: ${m.message_id}`, 'ok');
+    };
+    const senderLink = document.createElement('a');
+    senderLink.href = '#';
+    senderLink.textContent = `${senderName}`;
+    senderLink.onclick = (evt) => {
+      evt.preventDefault();
+      const qq = String((m && (m.user_id || (m.sender && m.sender.user_id))) || '').trim();
+      if (!qq) return;
+      el('atRef').value = qq;
+      notify(`已填充 @${qq}`, 'ok');
+    };
+    prefix.appendChild(timeLink);
+    prefix.appendChild(document.createTextNode(' '));
+    prefix.appendChild(senderLink);
+    prefix.appendChild(document.createTextNode(': '));
     item.appendChild(prefix);
-    renderMessageContent(item, m);
+    renderMessageContent(item, m, messageMap, userNameMap);
     box.appendChild(item);
   });
   box.scrollTop = box.scrollHeight;
@@ -417,6 +428,27 @@ function resolveImageUrl(seg, textFallback) {
   if (/^https?:\/\//i.test(url)) return url;
   if (/^https?:\/\//i.test(file)) return file;
   return extractImageUrlFromText(textFallback || '');
+}
+
+function resolveFileRef(seg) {
+  const data = seg && typeof seg.data === 'object' ? seg.data : {};
+  const ref = String(data.url || data.file || '').trim().replace(/&amp;/g, '&');
+  if (!ref) return '';
+  if (/^https?:\/\//i.test(ref)) return ref;
+  if (ref.startsWith('/')) return withAccessToken(ref);
+  return '';
+}
+
+function buildFileDownloadLink(msg, data) {
+  const params = new URLSearchParams();
+  params.set('type', String((msg && msg.type) || ''));
+  params.set('id', String((msg && msg.id) || ''));
+  const mapKeys = ['file_id', 'fileId', 'fileid', 'busid', 'file_busid', 'fileBusid', 'file', 'url', 'name', 'fname', 'filename', 'file_name'];
+  mapKeys.forEach((key) => {
+    const v = String((data && data[key]) || '').trim();
+    if (v) params.set(key, v);
+  });
+  return withAccessToken(`/backend/files/download?${params.toString()}`);
 }
 
 function openImageModal(url) {
@@ -468,7 +500,7 @@ function isSelfMessage(msg) {
 
 function normalizedSenderName(msg) {
   if (isSelfMessage(msg)) {
-    return state.selfNickname || String((msg && msg.sender) || '我');
+    return String(state.selfNickname || (msg && msg.sender) || '我');
   }
   return String((msg && msg.sender) || 'unknown');
 }
@@ -511,7 +543,14 @@ function appendTextWithMentions(container, text) {
   if (last < value.length) container.appendChild(document.createTextNode(value.slice(last)));
 }
 
-function renderMessageContent(container, msg) {
+function summarizeReplyText(msg) {
+  const raw = String((msg && msg.text) || '').trim();
+  if (!raw) return '...';
+  const compact = raw.replace(/\s+/g, ' ').trim();
+  return compact.length > 6 ? `${compact.slice(0, 6)}...` : compact;
+}
+
+function renderMessageContent(container, msg, messageMap = new Map(), userNameMap = new Map()) {
   const text = String((msg && msg.text) || '');
   const segments = Array.isArray(msg && msg.segments) ? msg.segments : [];
   if (segments.length > 0) {
@@ -520,31 +559,47 @@ function renderMessageContent(container, msg) {
       const data = seg && typeof seg.data === 'object' ? seg.data : {};
       if (type === 'text') {
         appendTextWithMentions(container, String(data.text || ''));
+      } else if (type === 'at') {
+        const qq = String(data.qq || data.id || data.uin || '').trim();
+        const span = document.createElement('span');
+        span.className = 'msg-mention';
+        const shown = qq ? (userNameMap.get(qq) || qq) : '';
+        span.textContent = shown ? `@${shown}` : '@';
+        container.appendChild(span);
+      } else if (type === 'reply') {
+        const rid = String(data.id || data.message_id || data.msg_id || '').trim();
+        const target = rid ? messageMap.get(rid) : null;
+        const targetName = target ? normalizedSenderName(target) : '某用户';
+        const targetText = target ? summarizeReplyText(target) : '...';
+        container.appendChild(document.createTextNode(`【回复:${targetName} ${targetText}】`));
       } else if (type === 'image') {
         const imageUrl = resolveImageUrl(seg, text);
         if (imageUrl) container.appendChild(createInlineLink('【图片】', () => openImageModal(imageUrl)));
         else container.appendChild(document.createTextNode('【图片(无可访问URL)】'));
       } else if (type === 'file') {
         const ref = String(data.url || data.file || '').trim();
-        const name = String(data.name || ref.split('/').pop() || '文件');
-        if (/^https?:\/\//i.test(ref)) {
+        const clickableRef = resolveFileRef(seg);
+        let name = String(inferDisplayFileName(data) || inferFileNameFromMessageText(text) || '文件');
+        if (isLikelyHashFileName(name)) {
+          const fallback = String(data.file || '').trim();
+          if (fallback && !isLikelyHashFileName(fallback)) name = fallback;
+          else name = '未命名文件';
+        }
+        const downloadLink = buildFileDownloadLink(msg, data);
+        if (clickableRef) {
           const fileLink = document.createElement('a');
-          fileLink.href = ref;
-          fileLink.target = '_blank';
+          fileLink.href = downloadLink || clickableRef;
+          fileLink.target = '_self';
           fileLink.rel = 'noopener noreferrer';
           fileLink.textContent = `【文件:${name}】`;
           container.appendChild(fileLink);
         } else if (data.file_id || data.fileId || data.fileid) {
-          container.appendChild(createInlineLink(`【文件:${name}】`, async () => {
-            const result = await api('/backend/files/url', 'POST', {
-              type: msg.type,
-              id: msg.id,
-              data,
-            });
-            const url = String((result && result.url) || '').trim();
-            if (!url) throw new Error('NapCat 未返回文件下载链接');
-            window.open(url, '_blank', 'noopener,noreferrer');
-          }));
+          const fileLink = document.createElement('a');
+          fileLink.href = downloadLink;
+          fileLink.target = '_self';
+          fileLink.rel = 'noopener noreferrer';
+          fileLink.textContent = `【文件:${name}】`;
+          container.appendChild(fileLink);
         } else {
           container.appendChild(document.createTextNode(`【文件:${name}】`));
         }
@@ -569,13 +624,53 @@ function inferFileNameFromRef(ref) {
   if (!value) return '';
   try {
     if (/^https?:\/\//i.test(value)) {
-      const p = new URL(value).pathname || '';
+      const parsed = new URL(value);
+      const qName = String(
+        parsed.searchParams.get('fname')
+        || parsed.searchParams.get('filename')
+        || parsed.searchParams.get('name')
+        || '',
+      ).trim();
+      if (qName) return decodeURIComponent(qName);
+      const p = parsed.pathname || '';
       const name = decodeURIComponent((p.split('/').pop() || '').trim());
       return name || '';
     }
   } catch (_) {}
-  const raw = value.split('/').pop().split('\\').pop();
+  const raw = value.split('?')[0].split('/').pop().split('\\').pop();
   return String(raw || '').trim();
+}
+
+function inferDisplayFileName(data) {
+  const segData = data && typeof data === 'object' ? data : {};
+  const direct = String(segData.name || segData.fname || segData.filename || segData.file_name || '').trim();
+  if (direct) return direct;
+  const file = String(segData.file || '').trim();
+  if (file && !/^https?:\/\//i.test(file) && !file.startsWith('/')) {
+    return inferFileNameFromRef(file) || file;
+  }
+  const fromUrl = inferFileNameFromRef(String(segData.url || '').trim());
+  if (fromUrl) return fromUrl;
+  return inferFileNameFromRef(file);
+}
+
+function inferFileNameFromMessageText(text) {
+  const raw = String(text || '');
+  if (!raw) return '';
+  const m = raw.match(/\[CQ:file,[^\]]*file=([^,\]]+)/i);
+  if (!m || !m[1]) return '';
+  try {
+    return decodeURIComponent(String(m[1]).replace(/&amp;/g, '&')).trim();
+  } catch (_) {
+    return String(m[1]).trim();
+  }
+}
+
+function isLikelyHashFileName(name) {
+  const value = String(name || '').trim();
+  if (!value) return false;
+  if (value.includes('.')) return false;
+  return /^[a-f0-9]{40,}$/i.test(value);
 }
 
 function normalizeFileNameForSend(name) {
@@ -584,17 +679,22 @@ function normalizeFileNameForSend(name) {
   const dot = raw.lastIndexOf('.');
   const base = dot > 0 ? raw.slice(0, dot) : raw;
   const ext = dot > 0 ? raw.slice(dot) : '';
-  if (!/[^\x00-\x7F]/.test(base)) return raw;
   const pinyin = Array.from(base).map((ch) => {
     if (/[\x00-\x7F]/.test(ch)) return ch;
-    return SIMPLE_PINYIN_MAP[ch] || 'zi';
+    return toTitleCasePinyinWord(PINYIN_DICT[ch] || 'Zi');
   }).join('_');
   const compact = pinyin
     .replace(/[^A-Za-z0-9._-]+/g, '_')
     .replace(/_+/g, '_')
     .replace(/^_+|_+$/g, '');
-  const finalBase = compact || `file_${Date.now()}`;
-  return `${finalBase}${ext}`;
+  const titled = toTitleCasePinyinWord(compact);
+  const finalBase = titled || `File${Date.now()}`;
+  const ascii = `${finalBase}${ext}`
+    .replace(/[^\x00-\x7F]+/g, '_')
+    .replace(/[^A-Za-z0-9._-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return ascii || `File${Date.now()}${ext}`;
 }
 
 function parseOutgoingTextSegments(text, type) {
@@ -619,12 +719,28 @@ function parseOutgoingTextSegments(text, type) {
 }
 
 function dedupeMessages(list) {
-  const seen = new Set();
+  const byId = new Map();
+  const contentSeen = new Set();
   const out = [];
   for (const m of list) {
-    const k = `${m.message_id || ''}_${m.time || ''}_${m.sender || ''}_${m.text || ''}`;
-    if (seen.has(k)) continue;
-    seen.add(k);
+    const id = String((m && m.message_id) || '').trim();
+    if (id && !id.startsWith('local_') && !id.startsWith('local_file_')) {
+      if (byId.has(id)) continue;
+      byId.set(id, true);
+      out.push(m);
+      continue;
+    }
+    const isSelf = isSelfMessage(m) ? 'self' : 'other';
+    const text = String((m && m.text) || '').trim();
+    const type = String((m && m.type) || '').trim();
+    const convId = String((m && m.id) || '').trim();
+    const roundedTime = Math.floor(Number((m && m.time) || 0) / 2);
+    const segmentSig = Array.isArray(m && m.segments)
+      ? m.segments.map((s) => `${String((s && s.type) || '')}:${JSON.stringify((s && s.data) || {})}`).join('|')
+      : '';
+    const key = `${type}:${convId}:${isSelf}:${roundedTime}:${text}:${segmentSig}`;
+    if (contentSeen.has(key)) continue;
+    contentSeen.add(key);
     out.push(m);
   }
   return out.sort((a, b) => (a.time || 0) - (b.time || 0));
@@ -701,10 +817,16 @@ function renderLogs() {
   const area = el('logsArea');
   if (!area) return;
   const allowed = state.logFilter;
-  const lines = getAllLogsSorted()
+  const rows = getAllLogsSorted()
     .filter((x) => !!allowed[String(x.level || '').toLowerCase()])
-    .map((x) => `[${x.time}] [${String(x.level).toUpperCase()}] ${x.text}`);
-  area.textContent = lines.join('\n');
+    .map((x) => ({ time: x.time, level: String(x.level || 'info').toLowerCase(), text: x.text }));
+  area.innerHTML = '';
+  rows.forEach((row) => {
+    const line = document.createElement('div');
+    line.className = `log-line log-${row.level}`;
+    line.textContent = `[${row.time}] [${row.level.toUpperCase()}] ${row.text}`;
+    area.appendChild(line);
+  });
   area.scrollTop = area.scrollHeight;
 }
 
@@ -783,6 +905,9 @@ async function refreshHealth() {
   el('wsTip').textContent = 'NapCat的ws客户端填写地址：ws://你的IP：18080/ws?access_token=你的wstoken';
   el('wsTipIp').textContent = `自动识别本机IP：${state.localIp || '-'}`;
   el('visitIp').textContent = `你的访问IP：${clientIp || '-'}${clientIpRaw && clientIpRaw !== clientIp ? `（raw: ${clientIpRaw}）` : ''}`;
+  el('selfQq').textContent = `QQ: ${state.selfId || '-'}`;
+  el('selfAvatar').src = state.selfId ? `https://q1.qlogo.cn/g?b=qq&nk=${encodeURIComponent(state.selfId)}&s=100` : '';
+  el('versionStamp').textContent = String(health.versionStamp || '-');
   if (health.napcat.connected) setConn('NapCat已连接', true);
   else setConn('等待NapCat连接', false);
 }
@@ -863,7 +988,7 @@ async function pullHistory({ append }) {
 
   const limit = Number(el('historyCount').value || 30);
   const res = await api('/backend/messages/pull', 'POST', { type: parsed.type, id: parsed.id, limit });
-  addMessages(parsed, res.data || [], append);
+  addMessages(parsed, res.data || [], false);
 }
 
 async function autoLoadOnOpen() {
@@ -937,10 +1062,17 @@ async function sendMessage() {
   if (!parsed) return notify('先选择当前会话', 'warn');
 
   const text = el('textMsg').value.trim();
-  const imageRef = el('imageRef').value.trim();
-  const fileRef = el('fileRef').value.trim();
+  const atRef = el('atRef').value.trim();
+  const replyRef = el('replyRef').value.trim();
+  const imageRef = String(state.pendingImageRef || '').trim();
+  const fileRef = String(state.pendingFileRef || '').trim();
 
   const segments = [];
+  if (replyRef) segments.push({ type: 'reply', data: { id: replyRef } });
+  if (parsed.type === 'group' && atRef) {
+    segments.push({ type: 'at', data: { qq: atRef } });
+    if (text) segments.push({ type: 'text', data: { text: ' ' } });
+  }
   if (text) segments.push(...parseOutgoingTextSegments(text, parsed.type));
   if (imageRef) segments.push({ type: 'image', data: { file: imageRef } });
   if (fileRef) {
@@ -950,15 +1082,20 @@ async function sendMessage() {
     segments.push({ type: 'file', data });
   }
   if (!segments.length) return notify('至少填一种消息内容', 'warn');
+  const textBrief = text ? (text.length > 24 ? `${text.slice(0, 24)}...` : text) : '';
+  addLog('info', `send -> ${parsed.type}:${parsed.id} at=${atRef || '-'} reply=${replyRef || '-'} image=${imageRef ? 'yes' : 'no'} file=${fileRef ? 'yes' : 'no'} fileName=${state.pendingFileName || '-'} segments=${segments.map((s) => s.type).join(',')}${textBrief ? ` text="${textBrief}"` : ''}`);
 
   const res = await api('/backend/messages/send', 'POST', { type: parsed.type, id: parsed.id, segments });
   const sentList = Array.isArray(res.list) ? res.list : (res.data ? [res.data] : []);
   if (sentList.length) addMessages(parsed, sentList, true);
 
   el('textMsg').value = '';
-  el('imageRef').value = '';
-  el('fileRef').value = '';
+  el('atRef').value = '';
+  el('replyRef').value = '';
+  state.pendingImageRef = '';
+  state.pendingFileRef = '';
   state.pendingFileName = '';
+  el('selectedMediaInfo').value = '';
   notify('发送成功', 'ok');
 }
 
@@ -979,7 +1116,8 @@ async function onPickedImage() {
   const file = picker.files && picker.files[0];
   if (!file) return;
   const res = await uploadLocalFile(file, 'image');
-  el('imageRef').value = res.url || res.relativeUrl || '';
+  state.pendingImageRef = String(res.url || res.relativeUrl || '').trim();
+  el('selectedMediaInfo').value = `图片: ${file.name || '已上传'}`;
   notify('图片已上传，可直接发送', 'ok');
 }
 
@@ -988,8 +1126,9 @@ async function onPickedFile() {
   const file = picker.files && picker.files[0];
   if (!file) return;
   const res = await uploadLocalFile(file, 'file');
-  el('fileRef').value = res.url || res.relativeUrl || '';
-  state.pendingFileName = file.name || res.name || '';
+  state.pendingFileRef = String(res.url || res.relativeUrl || '').trim();
+  state.pendingFileName = normalizeFileNameForSend(file.name || res.name || '');
+  el('selectedMediaInfo').value = `文件: ${state.pendingFileName || file.name || '已上传'}`;
   notify('文件已上传，可直接发送', 'ok');
 }
 
@@ -1183,18 +1322,6 @@ function connectRealtime() {
   };
 }
 
-async function switchProfile() {
-  const name = el('profileName').value.trim() || 'default';
-  if (!state.profiles[name]) {
-    state.profiles[name] = { whitelist: [], realtimeSet: {}, unread: {}, conversationKeys: [] };
-  }
-  state.profile = name;
-  saveProfiles();
-  applyProfile();
-  await saveWhitelistToBackend();
-  notify(`已切换配置: ${name}`, 'ok');
-}
-
 function bindEvents() {
   el('tabConsole').onclick = () => switchTab('console');
   el('tabDevices').onclick = () => switchTab('devices');
@@ -1219,7 +1346,6 @@ function bindEvents() {
     notify('Token已保存', 'ok');
   }, '保存中...');
 
-  el('switchProfile').onclick = () => runAction('switchProfile', () => switchProfile(), '切换中...');
   el('refreshHealth').onclick = () => runAction('refreshHealth', () => refreshHealth(), '刷新中...');
   el('refreshList').onclick = () => runAction('refreshList', () => saveConversation(), '刷新中...');
   el('doSearch').onclick = () => runAction('doSearch', () => doSearch(), '搜索中...');
@@ -1243,10 +1369,6 @@ function bindEvents() {
   };
   el('filePicker').onchange = () => {
     runAction('pickFile', () => onPickedFile(), '上传中...').catch(() => {});
-  };
-  el('fileRef').oninput = () => {
-    const value = el('fileRef').value.trim();
-    state.pendingFileName = value ? inferFileNameFromRef(value) : '';
   };
   el('mobileConvSelect').onchange = () => {
     const key = el('mobileConvSelect').value;
@@ -1339,6 +1461,7 @@ function bindEvents() {
 }
 
 async function boot() {
+  await loadPinyinDict();
   loadCustomSettingsFromCache();
   applyCustomStyles();
   if (URL_TOKEN) setClientToken(URL_TOKEN);
