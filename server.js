@@ -12,10 +12,12 @@ const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'store.json');
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 const EXPORT_DIR = path.join(DATA_DIR, 'exports');
+const LOCAL_FILES_DIR = path.join(DATA_DIR, 'local_files');
+const LOCAL_FILE_ROOT = process.env.LOCAL_FILE_ROOT || LOCAL_FILES_DIR;
 const FIXED_LOCAL_RULE = { host: '127.0.0.1', port: PORT, token: '', fixed: true };
 const FIXED_GLOBAL_RULE = { host: '0.0.0.0', port: PORT, token: '', fixed: true };
-const VERSION_DATE = '2026-05-13';
-const VERSION_REVISION = 12;
+const VERSION_DATE = '2026-05-22';
+const VERSION_REVISION = 15;
 const VERSION_STAMP = `v${VERSION_DATE}.${VERSION_REVISION}`;
 let PINYIN_DICT = {};
 
@@ -29,6 +31,7 @@ const MIME = {
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 if (!fs.existsSync(EXPORT_DIR)) fs.mkdirSync(EXPORT_DIR, { recursive: true });
+if (!fs.existsSync(LOCAL_FILES_DIR)) fs.mkdirSync(LOCAL_FILES_DIR, { recursive: true });
 try {
   const raw = fs.readFileSync(path.join(PUBLIC_DIR, 'pinyin_dict.json'), 'utf8');
   const parsed = JSON.parse(raw);
@@ -291,7 +294,7 @@ function defaultState() {
   return {
     wsToken: 'napcat_ws_token',
     accessToken: '',
-    uiSettings: { bgImageUrl: '', selfMsgColor: '#dbeafe' },
+    uiSettings: { bgImageUrl: '', bgOpacity: 20, bgPosX: 50, bgPosY: 50, selfMsgColor: '#dbeafe' },
     activeProfile: 'default',
     profiles: {
       default: { whitelist: [], realtimeSet: {}, unread: {}, conversationKeys: [] },
@@ -323,9 +326,12 @@ function loadState() {
       uiSettings: parsed.uiSettings && typeof parsed.uiSettings === 'object'
         ? {
           bgImageUrl: String(parsed.uiSettings.bgImageUrl || ''),
+          bgOpacity: Number(parsed.uiSettings.bgOpacity || 20),
+          bgPosX: Number(parsed.uiSettings.bgPosX || 50),
+          bgPosY: Number(parsed.uiSettings.bgPosY || 50),
           selfMsgColor: String(parsed.uiSettings.selfMsgColor || '#dbeafe'),
         }
-        : { bgImageUrl: '', selfMsgColor: '#dbeafe' },
+        : { bgImageUrl: '', bgOpacity: 20, bgPosX: 50, bgPosY: 50, selfMsgColor: '#dbeafe' },
       activeProfile: String(parsed.activeProfile || 'default'),
       profiles: parsed.profiles && typeof parsed.profiles === 'object'
         ? parsed.profiles
@@ -611,9 +617,13 @@ function buildUploadFileParams(type, id, fileSeg) {
     resolvedSource = source;
   } else if (source.startsWith('/files/')) {
     resolvedSource = source;
-  } else if (path.isAbsolute(resolvedSource) && fs.existsSync(resolvedSource)) {
-    localPath = resolvedSource;
-    resolvedSource = toFileUrl(resolvedSource);
+  } else if (path.isAbsolute(resolvedSource)) {
+    if (fs.existsSync(resolvedSource)) {
+      localPath = resolvedSource;
+      resolvedSource = toFileUrl(resolvedSource);
+    } else {
+      return null; // local file not found, skip silently
+    }
   }
   let originalName = String((fileSeg && fileSeg.data && fileSeg.data.name) || '').trim();
   if (!originalName) {
@@ -975,20 +985,29 @@ const server = http.createServer(async (req, res) => {
         versionStamp: VERSION_STAMP,
         accessToken: tokenManageAllowed ? state.accessToken : '',
         tokenManageAllowed,
-        uiSettings: state.uiSettings || { bgImageUrl: '', selfMsgColor: '#dbeafe' },
+        uiSettings: state.uiSettings || { bgImageUrl: '', bgOpacity: 20, bgPosX: 50, bgPosY: 50, selfMsgColor: '#dbeafe' },
         accessRules: getAccessRules(),
       });
     }
 
     if (req.method === 'GET' && pathname === '/backend/ui-settings') {
-      return json(res, 200, { data: state.uiSettings || { bgImageUrl: '', selfMsgColor: '#dbeafe' } });
+      return json(res, 200, { data: state.uiSettings || { bgImageUrl: '', bgOpacity: 20, bgPosX: 50, bgPosY: 50, selfMsgColor: '#dbeafe' } });
     }
 
     if (req.method === 'POST' && pathname === '/backend/ui-settings') {
       const body = await readBody(req);
       const bgImageUrl = String((body && body.bgImageUrl) || '').trim();
+      const bgOpacity = Math.max(5, Math.min(100, Number((body && body.bgOpacity) || 20)));
+      const bgPosX = Math.max(0, Math.min(100, Number((body && body.bgPosX) || 50)));
+      const bgPosY = Math.max(0, Math.min(100, Number((body && body.bgPosY) || 50)));
       const selfMsgColor = String((body && body.selfMsgColor) || '#dbeafe').trim();
-      state.uiSettings = { bgImageUrl, selfMsgColor: /^#[0-9a-fA-F]{6}$/.test(selfMsgColor) ? selfMsgColor : '#dbeafe' };
+      state.uiSettings = {
+        bgImageUrl,
+        bgOpacity,
+        bgPosX,
+        bgPosY,
+        selfMsgColor: /^#[0-9a-fA-F]{6}$/.test(selfMsgColor) ? selfMsgColor : '#dbeafe',
+      };
       saveState();
       return json(res, 200, { ok: true, data: state.uiSettings });
     }
@@ -1408,6 +1427,115 @@ const server = http.createServer(async (req, res) => {
       const fpath = path.join(EXPORT_DIR, fname);
       fs.writeFileSync(fpath, `${lines.join('\n')}\n`, 'utf8');
       return json(res, 200, { ok: true, file: `data/exports/${fname}` });
+    }
+
+    if (req.method === 'GET' && pathname === '/backend/files/local') {
+      const urlObj = new URL(req.url, `http://${req.headers.host || `127.0.0.1:${PORT}`}`);
+      let dirPath = String(urlObj.searchParams.get('path') || '').trim();
+      const rootResolved = path.resolve(LOCAL_FILE_ROOT);
+      if (!dirPath) dirPath = rootResolved;
+      const resolved = path.resolve(dirPath);
+      if (!resolved.startsWith(rootResolved)) {
+        return json(res, 403, { error: 'access denied: path outside root' });
+      }
+      try {
+        if (!fs.existsSync(resolved)) return json(res, 404, { error: 'path not found' });
+        const dirStat = fs.statSync(resolved);
+        if (!dirStat.isDirectory()) return json(res, 400, { error: 'not a directory' });
+        const dirents = fs.readdirSync(resolved, { withFileTypes: true });
+        const items = dirents.map((entry) => {
+          const fullPath = path.join(resolved, entry.name);
+          let size = 0;
+          let mtime = 0;
+          try {
+            const st = fs.statSync(fullPath);
+            size = st.size;
+            mtime = Math.floor(st.mtimeMs);
+          } catch {}
+          return { name: entry.name, type: entry.isDirectory() ? 'folder' : 'file', size, mtime, path: fullPath };
+        }).sort((a, b) => {
+          if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
+          return a.name.localeCompare(b.name, 'zh-CN');
+        });
+        const parent = resolved === rootResolved ? null : path.dirname(resolved);
+        return json(res, 200, { path: resolved, parent, root: rootResolved, entries: items });
+      } catch (err) {
+        if (err && (err.code === 'EPERM' || err.code === 'EACCES')) {
+          return json(res, 403, { error: '该目录无权限访问（系统保护）' });
+        }
+        return json(res, 500, { error: err.message });
+      }
+    }
+
+    if (req.method === 'POST' && pathname === '/backend/files/local/mkdir') {
+      const body = await readBody(req);
+      const dirPath = String((body && body.path) || '').trim();
+      const rootResolved = path.resolve(LOCAL_FILE_ROOT);
+      if (!dirPath) return json(res, 400, { error: 'path required' });
+      const resolved = path.resolve(dirPath);
+      if (!resolved.startsWith(rootResolved)) return json(res, 403, { error: 'access denied: path outside root' });
+      try {
+        if (!fs.existsSync(resolved)) {
+          fs.mkdirSync(resolved, { recursive: true });
+          return json(res, 200, { ok: true });
+        }
+        return json(res, 400, { error: 'path already exists' });
+      } catch (err) {
+        return json(res, 500, { error: err.message });
+      }
+    }
+
+    if (req.method === 'GET' && pathname === '/backend/files/group') {
+      const urlObj = new URL(req.url, `http://${req.headers.host || `127.0.0.1:${PORT}`}`);
+      const groupId = String(urlObj.searchParams.get('group_id') || '').trim();
+      const folderId = String(urlObj.searchParams.get('folder_id') || '').trim();
+      if (!groupId) return json(res, 400, { error: 'group_id required' });
+      try {
+        let rpc;
+        if (folderId) {
+          rpc = await callOneBot('get_group_files_by_folder', { group_id: Number(groupId), folder_id: folderId });
+        } else {
+          rpc = await callOneBot('get_group_root_files', { group_id: Number(groupId) });
+        }
+        return json(res, 200, { ok: true, data: (rpc && rpc.data) || { files: [], folders: [] } });
+      } catch (err) {
+        return json(res, 502, { error: err.message || 'NapCat 调用失败' });
+      }
+    }
+
+    if (req.method === 'POST' && pathname === '/backend/files/group/mkdir') {
+      const body = await readBody(req);
+      const groupId = String((body && body.group_id) || '').trim();
+      const folderName = String((body && body.folder_name) || '').trim();
+      if (!groupId || !folderName) return json(res, 400, { error: 'group_id and folder_name required' });
+      try {
+        const params = { group_id: Number(groupId), folder_name: folderName };
+        if (body && body.parent_id) params.parent_id = String(body.parent_id);
+        const rpc = await callOneBot('create_group_file_folder', params);
+        return json(res, 200, { ok: true, data: (rpc && rpc.data) || {} });
+      } catch (err) {
+        return json(res, 500, { error: err.message });
+      }
+    }
+
+    if (req.method === 'POST' && pathname === '/backend/files/group/delete') {
+      const body = await readBody(req);
+      const groupId = String((body && body.group_id) || '').trim();
+      const fileId = String((body && body.file_id) || '').trim();
+      const isFolder = !!(body && body.is_folder);
+      if (!groupId || !fileId) return json(res, 400, { error: 'group_id and file_id required' });
+      try {
+        if (isFolder) {
+          await callOneBot('delete_group_folder', { group_id: Number(groupId), folder_id: fileId });
+        } else {
+          const params = { group_id: Number(groupId), file_id: fileId };
+          if (body && body.busid) params.busid = Number(body.busid);
+          await callOneBot('delete_group_file', params);
+        }
+        return json(res, 200, { ok: true });
+      } catch (err) {
+        return json(res, 500, { error: err.message });
+      }
     }
 
     if (req.method === 'GET' && pathname === '/backend/events') {

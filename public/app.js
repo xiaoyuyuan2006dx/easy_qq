@@ -19,10 +19,18 @@ const state = {
   logs: [],
   auditLogs: [],
   logFilter: { debug: true, info: true, warn: true, error: true, system: true },
-  custom: { bgImageUrl: '', selfMsgColor: '#dbeafe' },
+  custom: { bgImageUrl: '', bgOpacity: 20, bgPosX: 50, bgPosY: 50, selfMsgColor: '#dbeafe' },
   authed: false,
   selfId: '',
   selfNickname: '',
+  fileLocalPath: '',
+  fileLocalRoot: '',
+  fileLocalEntries: [],
+  fileGroupId: '',
+  fileGroupPath: [],
+  fileGroupEntries: { files: [], folders: [] },
+  fileLocalSelected: new Set(),
+  fileGroupSelected: new Set(),
 };
 
 const el = (id) => document.getElementById(id);
@@ -87,6 +95,7 @@ function todayStartSec() {
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
   return Math.floor(start.getTime() / 1000);
 }
+function nowSec() { return Math.floor(Date.now() / 1000); }
 
 function isMobileView() {
   return window.matchMedia && window.matchMedia('(max-width: 900px)').matches;
@@ -218,14 +227,19 @@ async function loadProfiles() {
   try {
     const raw = localStorage.getItem('easyqq_single_profile');
     const parsed = raw ? JSON.parse(raw) : {};
-    state.whitelist = Array.isArray(parsed.whitelist) ? parsed.whitelist : [];
     state.unread = parsed.unread && typeof parsed.unread === 'object' ? parsed.unread : {};
     state.visibleConvKeys = Array.isArray(parsed.conversationKeys) ? parsed.conversationKeys.map(String) : [];
+    // whitelist synced from backend first, then merged with local
+    try {
+      const wlRes = await api('/backend/whitelist');
+      state.whitelist = Array.isArray(wlRes.data) ? wlRes.data : [];
+    } catch (_) {
+      state.whitelist = Array.isArray(parsed.whitelist) ? parsed.whitelist : [];
+    }
   } catch (_) {}
 }
 
 function applyProfile() {
-  renderWhitelist();
   renderConversations();
   updateRealtimeButton();
 }
@@ -281,14 +295,7 @@ function isRealtimeEnabled(conv) {
 }
 
 function renderWhitelist() {
-  const box = el('wlList');
-  box.innerHTML = '';
-  state.whitelist.forEach((entry) => {
-    const item = document.createElement('div');
-    item.className = 'item';
-    item.textContent = `${entry.type}:${entry.id}`;
-    box.appendChild(item);
-  });
+  // whitelist items are now shown inline in the conversation list (top, accent)
 }
 
 function renderConversations() {
@@ -298,25 +305,37 @@ function renderConversations() {
   const selected = (state.visibleConvKeys || [])
     .map((key) => map.get(key))
     .filter(Boolean);
-  selected.forEach((conv) => {
+  // sort: whitelisted first, then others
+  const sorted = [...selected].sort((a, b) => {
+    const aWl = isWhitelisted(a.type, a.id) ? 1 : 0;
+    const bWl = isWhitelisted(b.type, b.id) ? 1 : 0;
+    return bWl - aWl;
+  });
+  sorted.forEach((conv) => {
     const key = convKey(conv.type, conv.id);
     const item = document.createElement('div');
-    item.className = `item ${state.activeConv === key ? 'active' : ''}`;
+    const wlClass = isWhitelisted(conv.type, conv.id) ? ' conv-item wl-accent' : '';
+    item.className = `item${state.activeConv === key ? ' active' : ''}${wlClass}`;
     const unread = Number(state.unread[key] || 0);
-    item.textContent = `${conversationLabel(conv)}${unread > 0 ? `  🔔${unread}` : ''}${isWhitelisted(conv.type, conv.id) ? '  ●实时' : ''}`;
+    const wlBadge = isWhitelisted(conv.type, conv.id) ? ' ●实时' : '';
+    // whitelisted: show only name; others: show full type:id (name)
+    const label = isWhitelisted(conv.type, conv.id) && conv.name
+      ? conv.name
+      : conversationLabel(conv);
+    item.textContent = `${label}${unread > 0 ? `  🔔${unread}` : ''}${wlBadge}`;
     item.onclick = async () => {
       await setActiveConversation(key, true);
     };
     box.appendChild(item);
   });
-  if (!selected.length) {
+  if (!sorted.length) {
     const empty = document.createElement('div');
     empty.className = 'item';
     empty.style.cursor = 'default';
-    empty.textContent = '暂无显示会话，请点“管理会话”添加';
+    empty.textContent = '暂无显示会话，请点”管理会话”添加';
     box.appendChild(empty);
   }
-  renderMobileConvSelect(selected);
+  renderMobileConvSelect(sorted);
 }
 
 async function setActiveConversation(key, autoLoad = true) {
@@ -357,6 +376,11 @@ function renderMobileConvSelect(selectedList) {
   sel.value = state.activeConv;
 }
 
+function getDateLabel(ts) {
+  const d = new Date(ts * 1000);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 function renderMessages() {
   const box = el('msgArea');
   box.innerHTML = '';
@@ -371,30 +395,48 @@ function renderMessages() {
     const uname = String(normalizedSenderName(m) || '').trim();
     if (uid && uname && !userNameMap.has(uid)) userNameMap.set(uid, uname);
   });
+  let lastDateLabel = '';
   list.forEach((m) => {
     if (!state.selfNickname && String(m.sender || '').trim() && String(m.sender || '').toLowerCase() !== 'me' && isSelfMessage(m)) {
       state.selfNickname = String(m.sender || '').trim();
+    }
+    const curDateLabel = getDateLabel(m.time || nowSec());
+    if (curDateLabel !== lastDateLabel) {
+      lastDateLabel = curDateLabel;
+      const sep = document.createElement('div');
+      sep.className = 'date-separator';
+      const label = document.createElement('span');
+      label.className = 'date-label';
+      label.textContent = curDateLabel;
+      sep.appendChild(label);
+      box.appendChild(sep);
     }
     const senderName = normalizedSenderName(m);
     const item = document.createElement('div');
     item.className = 'msg';
     item.style.setProperty('--sender-bg', senderColorBg(senderName || 'unknown'));
     if (isSelfMessage(m)) item.classList.add('self');
-    const timeText = new Date((m.time || Date.now() / 1000) * 1000).toLocaleString();
     const prefix = document.createElement('span');
     prefix.className = 'msg-prefix';
+    // time link (click to reply)
+    const d = new Date((m.time || nowSec()) * 1000);
+    const timeText = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
     const timeLink = document.createElement('a');
     timeLink.href = '#';
-    timeLink.textContent = `[${timeText}]`;
+    timeLink.textContent = timeText;
+    timeLink.title = '点击设置回复';
     timeLink.onclick = (evt) => {
       evt.preventDefault();
       if (!m || !m.message_id) return;
       el('replyRef').value = String(m.message_id || '');
       notify(`已设置回复: ${m.message_id}`, 'ok');
     };
+    prefix.appendChild(timeLink);
+    prefix.appendChild(document.createTextNode(' '));
     const senderLink = document.createElement('a');
     senderLink.href = '#';
     senderLink.textContent = `${senderName}`;
+    senderLink.title = '点击@此人';
     senderLink.onclick = (evt) => {
       evt.preventDefault();
       const qq = String((m && (m.user_id || (m.sender && m.sender.user_id))) || '').trim();
@@ -402,8 +444,6 @@ function renderMessages() {
       el('atRef').value = qq;
       notify(`已填充 @${qq}`, 'ok');
     };
-    prefix.appendChild(timeLink);
-    prefix.appendChild(document.createTextNode(' '));
     prefix.appendChild(senderLink);
     prefix.appendChild(document.createTextNode(': '));
     item.appendChild(prefix);
@@ -757,15 +797,23 @@ function addMessages(conv, msgs, append = true) {
 function switchTab(tab) {
   state.activeTab = tab;
   el('tabConsole').classList.toggle('active', tab === 'console');
+  el('tabFiles').classList.toggle('active', tab === 'files');
   el('tabDevices').classList.toggle('active', tab === 'devices');
   el('tabSettings').classList.toggle('active', tab === 'settings');
   el('tabLogs').classList.toggle('active', tab === 'logs');
   el('pageConsole').classList.toggle('active', tab === 'console');
+  el('pageFiles').classList.toggle('active', tab === 'files');
   el('pageDevices').classList.toggle('active', tab === 'devices');
   el('pageSettings').classList.toggle('active', tab === 'settings');
   el('pageLogs').classList.toggle('active', tab === 'logs');
   if (tab === 'devices') {
     refreshDevices().catch((e) => notify(e.message, 'err'));
+  }
+  if (tab === 'files') {
+    refreshFileGroupSelect();
+    if (!state.fileLocalEntries.length) {
+      loadLocalFiles('').catch((e) => notify(e.message, 'err'));
+    }
   }
   if (tab === 'logs') renderLogs();
 }
@@ -777,7 +825,13 @@ function formatSec(ts) {
 
 function applyCustomStyles() {
   const bg = String(state.custom.bgImageUrl || '').trim();
+  const opacity = Number(state.custom.bgOpacity || 20) / 100;
+  const posX = Number(state.custom.bgPosX || 50);
+  const posY = Number(state.custom.bgPosY || 50);
   document.body.style.setProperty('--bg-image', bg ? `url("${bg.replace(/"/g, '\\"')}")` : 'none');
+  document.body.style.setProperty('--bg-opacity', String(opacity));
+  document.body.style.setProperty('--bg-position', `${posX}% ${posY}%`);
+  document.body.classList.toggle('has-bg-image', !!bg);
 }
 
 function syncSelfColorPreview() {
@@ -790,6 +844,9 @@ async function loadCustomSettings() {
   const res = await api('/backend/ui-settings');
   const parsed = res && res.data ? res.data : {};
   state.custom.bgImageUrl = String(parsed.bgImageUrl || '');
+  state.custom.bgOpacity = Number(parsed.bgOpacity || 20);
+  state.custom.bgPosX = Number(parsed.bgPosX || 50);
+  state.custom.bgPosY = Number(parsed.bgPosY || 50);
   state.custom.selfMsgColor = String(parsed.selfMsgColor || '#dbeafe');
   localStorage.setItem(UI_CACHE_KEY, JSON.stringify(state.custom));
 }
@@ -797,6 +854,9 @@ async function loadCustomSettings() {
 async function saveCustomSettings() {
   await api('/backend/ui-settings', 'POST', {
     bgImageUrl: state.custom.bgImageUrl,
+    bgOpacity: state.custom.bgOpacity,
+    bgPosX: state.custom.bgPosX,
+    bgPosY: state.custom.bgPosY,
     selfMsgColor: state.custom.selfMsgColor,
   });
   localStorage.setItem(UI_CACHE_KEY, JSON.stringify(state.custom));
@@ -808,9 +868,23 @@ function loadCustomSettingsFromCache() {
     const parsed = raw ? JSON.parse(raw) : {};
     if (parsed && typeof parsed === 'object') {
       state.custom.bgImageUrl = String(parsed.bgImageUrl || state.custom.bgImageUrl || '');
+      state.custom.bgOpacity = Number(parsed.bgOpacity || state.custom.bgOpacity || 20);
+      state.custom.bgPosX = Number(parsed.bgPosX || state.custom.bgPosX || 50);
+      state.custom.bgPosY = Number(parsed.bgPosY || state.custom.bgPosY || 50);
       state.custom.selfMsgColor = String(parsed.selfMsgColor || state.custom.selfMsgColor || '#dbeafe');
     }
   } catch (_) {}
+}
+
+function syncSettingsToUI() {
+  el('bgImageUrl').value = state.custom.bgImageUrl || '';
+  el('bgOpacity').value = state.custom.bgOpacity || 20;
+  el('bgOpacityLabel').textContent = `${state.custom.bgOpacity || 20}%`;
+  el('bgPosX').value = state.custom.bgPosX || 50;
+  el('bgPosXLabel').textContent = `${state.custom.bgPosX || 50}%`;
+  el('bgPosY').value = state.custom.bgPosY || 50;
+  el('bgPosYLabel').textContent = `${state.custom.bgPosY || 50}%`;
+  syncSelfColorPreview();
 }
 
 function renderLogs() {
@@ -926,8 +1000,7 @@ async function loadInitial() {
   await loadProfiles();
   applyProfile();
   await refreshHealth();
-  el('bgImageUrl').value = state.custom.bgImageUrl || '';
-  syncSelfColorPreview();
+  syncSettingsToUI();
 
   const conv = await api('/backend/conversations');
   state.conversations = normalizeConversationList(conv.data || []);
@@ -953,7 +1026,6 @@ async function loadInitial() {
 async function saveWhitelistToBackend() {
   await api('/backend/whitelist', 'POST', { data: state.whitelist });
   saveProfileData();
-  renderWhitelist();
   renderConversations();
 }
 
@@ -1286,6 +1358,272 @@ async function exportLogs() {
   notify(`日志导出成功: ${res.file}`, 'ok');
 }
 
+// --- file management ---
+
+function formatSize(bytes) {
+  if (!bytes || bytes <= 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function formatFileTime(ms) {
+  if (!ms) return '';
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+async function loadLocalFiles(dirPath) {
+  const params = new URLSearchParams();
+  if (dirPath) params.set('path', dirPath);
+  const res = await api(`/backend/files/local?${params.toString()}`);
+  state.fileLocalPath = String(res.path || '');
+  state.fileLocalRoot = String(res.root || '');
+  state.fileLocalEntries = Array.isArray(res.entries) ? res.entries : [];
+  state.fileLocalSelected.clear();
+  renderLocalFiles();
+}
+
+function renderLocalFiles() {
+  const box = el('localFileList');
+  const pathInput = el('localPathInput');
+  box.innerHTML = '';
+  pathInput.value = state.fileLocalPath || '';
+  state.fileLocalEntries.forEach((entry) => {
+    const row = document.createElement('div');
+    row.className = `file-item${entry.type === 'folder' ? ' folder-item' : ''}${state.fileLocalSelected.has(entry.path) ? ' selected' : ''}`;
+    row.onclick = (evt) => {
+      if (entry.type === 'folder') {
+        loadLocalFiles(entry.path).catch((e) => notify(e.message, 'err'));
+        return;
+      }
+      // toggle selection for files
+      if (state.fileLocalSelected.has(entry.path)) {
+        state.fileLocalSelected.delete(entry.path);
+      } else {
+        state.fileLocalSelected.add(entry.path);
+      }
+      renderLocalFiles();
+    };
+    const icon = document.createElement('span');
+    icon.className = 'file-icon';
+    icon.textContent = entry.type === 'folder' ? '📁' : '📄';
+    const name = document.createElement('span');
+    name.className = 'file-name';
+    name.textContent = entry.name;
+    const size = document.createElement('span');
+    size.className = 'file-size';
+    size.textContent = entry.type === 'file' ? formatSize(entry.size) : '';
+    const time = document.createElement('span');
+    time.className = 'file-time';
+    time.textContent = formatFileTime(entry.mtime);
+    row.appendChild(icon);
+    row.appendChild(name);
+    row.appendChild(size);
+    row.appendChild(time);
+    box.appendChild(row);
+  });
+}
+
+async function loadGroupFiles(groupId, folderId) {
+  if (!groupId) {
+    state.fileGroupEntries = { files: [], folders: [] };
+    state.fileGroupPath = [];
+    el('groupFolderLabel').textContent = '根目录';
+    renderGroupFiles();
+    return;
+  }
+  const params = new URLSearchParams();
+  params.set('group_id', groupId);
+  if (folderId) params.set('folder_id', folderId);
+  const res = await api(`/backend/files/group?${params.toString()}`);
+  const data = res && res.data ? res.data : { files: [], folders: [] };
+  state.fileGroupEntries = {
+    files: Array.isArray(data.files) ? data.files : [],
+    folders: Array.isArray(data.folders) ? data.folders : [],
+  };
+  state.fileGroupSelected.clear();
+  renderGroupFiles();
+}
+
+function renderGroupFiles() {
+  const box = el('groupFileList');
+  box.innerHTML = '';
+  const allItems = [];
+  (state.fileGroupEntries.folders || []).forEach((f) => allItems.push({ ...f, _type: 'folder' }));
+  (state.fileGroupEntries.files || []).forEach((f) => allItems.push({ ...f, _type: 'file' }));
+  allItems.sort((a, b) => {
+    if (a._type !== b._type) return a._type === 'folder' ? -1 : 1;
+    return String(a.name || a.file_name || '').localeCompare(String(b.name || b.file_name || ''), 'zh-CN');
+  });
+  allItems.forEach((entry) => {
+    const id = String(entry.file_id || entry.folder_id || entry.name || '');
+    const row = document.createElement('div');
+    row.className = `file-item${entry._type === 'folder' ? ' folder-item' : ''}${state.fileGroupSelected.has(id) ? ' selected' : ''}`;
+    row.onclick = (evt) => {
+      if (entry._type === 'folder') {
+        const nextPath = [...(state.fileGroupPath || [])];
+        nextPath.push({ id, name: String(entry.folder_name || entry.name || id) });
+        state.fileGroupPath = nextPath;
+        el('groupFolderLabel').textContent = '/' + nextPath.map((p) => p.name).join('/');
+        loadGroupFiles(state.fileGroupId, id).catch((e) => notify(e.message, 'err'));
+        return;
+      }
+      if (state.fileGroupSelected.has(id)) {
+        state.fileGroupSelected.delete(id);
+      } else {
+        state.fileGroupSelected.add(id);
+      }
+      renderGroupFiles();
+    };
+    const icon = document.createElement('span');
+    icon.className = 'file-icon';
+    icon.textContent = entry._type === 'folder' ? '📁' : '📄';
+    const name = document.createElement('span');
+    name.className = 'file-name';
+    name.textContent = String(entry.name || entry.file_name || entry.folder_name || id);
+    const size = document.createElement('span');
+    size.className = 'file-size';
+    size.textContent = entry._type === 'file' ? formatSize(Number(entry.size || entry.file_size || 0)) : '';
+    row.appendChild(icon);
+    row.appendChild(name);
+    row.appendChild(size);
+    box.appendChild(row);
+  });
+}
+
+function navigateGroupUp() {
+  const p = state.fileGroupPath || [];
+  if (!p.length) return;
+  const popped = p.pop();
+  state.fileGroupPath = p;
+  el('groupFolderLabel').textContent = p.length ? '/' + p.map((x) => x.name).join('/') : '根目录';
+  const parentId = p.length ? p[p.length - 1].id : '';
+  loadGroupFiles(state.fileGroupId, parentId).catch((e) => notify(e.message, 'err'));
+}
+
+async function uploadLocalToGroup() {
+  if (!state.fileGroupId) return notify('请先选择目标群聊', 'warn');
+  if (!state.fileLocalSelected.size) return notify('请先在左侧选中要上传的文件', 'warn');
+  for (const filePath of state.fileLocalSelected) {
+    const fileName = filePath.split('/').pop() || filePath;
+    try {
+      await api('/backend/messages/send', 'POST', {
+        type: 'group',
+        id: state.fileGroupId,
+        segments: [{ type: 'file', data: { file: filePath, name: fileName } }],
+      });
+      notify(`已上传: ${fileName}`, 'ok');
+    } catch (e) {
+      notify(`上传失败 ${fileName}: ${e.message}`, 'err');
+    }
+  }
+  state.fileLocalSelected.clear();
+  renderLocalFiles();
+  loadGroupFiles(state.fileGroupId, state.fileGroupPath.length ? state.fileGroupPath[state.fileGroupPath.length - 1].id : '').catch(() => {});
+}
+
+async function downloadSelectedGroupFiles() {
+  if (!state.fileGroupSelected.size) return notify('请先在右侧选中要下载的文件', 'warn');
+  for (const fileId of state.fileGroupSelected) {
+    const entry = [...(state.fileGroupEntries.files || []), ...(state.fileGroupEntries.folders || [])]
+      .find((e) => String(e.file_id || e.folder_id || e.name || '') === fileId);
+    if (!entry || entry._type === 'folder') continue;
+    const params = new URLSearchParams();
+    params.set('type', 'group');
+    params.set('id', state.fileGroupId);
+    params.set('file_id', String(entry.file_id || ''));
+    if (entry.busid) params.set('busid', String(entry.busid));
+    const name = String(entry.name || entry.file_name || fileId);
+    params.set('name', name);
+    const url = withAccessToken(`/backend/files/download?${params.toString()}`);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+  notify('已开始下载选中文件', 'ok');
+}
+
+async function deleteSelectedGroupFiles() {
+  if (!state.fileGroupSelected.size) return notify('请先在右侧选中要删除的文件/文件夹', 'warn');
+  if (!confirm(`确认删除 ${state.fileGroupSelected.size} 个文件/文件夹？此操作不可撤销。`)) return;
+  for (const fileId of state.fileGroupSelected) {
+    const entry = [...(state.fileGroupEntries.files || []), ...(state.fileGroupEntries.folders || [])]
+      .find((e) => String(e.file_id || e.folder_id || e.name || '') === fileId);
+    if (!entry) continue;
+    try {
+      await api('/backend/files/group/delete', 'POST', {
+        group_id: state.fileGroupId,
+        file_id: String(entry.file_id || entry.folder_id || ''),
+        is_folder: entry._type === 'folder' || !!entry.folder_id,
+        busid: entry.busid,
+      });
+    } catch (e) {
+      notify(`删除失败: ${e.message}`, 'err');
+    }
+  }
+  notify('删除完成', 'ok');
+  const folderId = state.fileGroupPath.length ? state.fileGroupPath[state.fileGroupPath.length - 1].id : '';
+  loadGroupFiles(state.fileGroupId, folderId).catch(() => {});
+}
+
+async function createGroupFolder() {
+  const name = prompt('请输入文件夹名称:');
+  if (!name || !name.trim()) return;
+  const parentId = state.fileGroupPath.length ? state.fileGroupPath[state.fileGroupPath.length - 1].id : '';
+  try {
+    await api('/backend/files/group/mkdir', 'POST', {
+      group_id: state.fileGroupId,
+      folder_name: name.trim(),
+      parent_id: parentId || undefined,
+    });
+    notify('文件夹已创建', 'ok');
+    loadGroupFiles(state.fileGroupId, parentId).catch(() => {});
+  } catch (e) {
+    notify(e.message, 'err');
+  }
+}
+
+async function createLocalFolder() {
+  const name = prompt('请输入文件夹名称:');
+  if (!name || !name.trim()) return;
+  const targetPath = (state.fileLocalPath || '') + '/' + name.trim();
+  try {
+    await api('/backend/files/local/mkdir', 'POST', { path: targetPath });
+    notify('本地文件夹已创建', 'ok');
+  } catch (e) {
+    notify(e.message, 'err');
+  }
+  loadLocalFiles(state.fileLocalPath).catch(() => {});
+}
+
+function refreshFileGroupSelect() {
+  const sel = el('fileGroupSelect');
+  // only show whitelisted groups
+  const groups = state.conversations.filter((c) => c.type === 'group' && isWhitelisted(c.type, c.id));
+  sel.innerHTML = '<option value="">-- 选择群聊（仅白名单） --</option>';
+  groups.forEach((g) => {
+    const op = document.createElement('option');
+    op.value = g.id;
+    op.textContent = conversationLabel(g);
+    sel.appendChild(op);
+  });
+  if (state.fileGroupId && groups.some((g) => g.id === state.fileGroupId)) {
+    sel.value = state.fileGroupId;
+  } else {
+    state.fileGroupId = '';
+    state.fileGroupPath = [];
+    state.fileGroupEntries = { files: [], folders: [] };
+    el('groupFolderLabel').textContent = '根目录';
+    renderGroupFiles();
+  }
+}
+
 function connectRealtime() {
   if (state.sse) state.sse.close();
   state.sse = new EventSource(withAccessToken('/backend/events'));
@@ -1324,6 +1662,7 @@ function connectRealtime() {
 
 function bindEvents() {
   el('tabConsole').onclick = () => switchTab('console');
+  el('tabFiles').onclick = () => switchTab('files');
   el('tabDevices').onclick = () => switchTab('devices');
   el('tabSettings').onclick = () => switchTab('settings');
   el('tabLogs').onclick = () => switchTab('logs');
@@ -1356,6 +1695,54 @@ function bindEvents() {
       updateRealtimeButton();
       notify('白名单已清空', 'warn');
     }).catch((e) => notify(e.message, 'err'));
+  };
+
+  // file management bindings
+  el('localGoUp').onclick = () => {
+    if (!state.fileLocalPath) return;
+    const root = (state.fileLocalRoot || state.fileLocalPath || '').replace(/\/+$/, '');
+    const cur = state.fileLocalPath.replace(/\/+$/, '');
+    if (cur === root || cur.length <= root.length) {
+      notify('已在根目录', 'warn');
+      return;
+    }
+    const parent = cur.split('/').slice(0, -1).join('/') || '/';
+    loadLocalFiles(parent).catch((e) => notify(e.message, 'err'));
+  };
+  el('localGoBtn').onclick = () => {
+    const p = el('localPathInput').value.trim();
+    if (!p) return;
+    loadLocalFiles(p).catch((e) => notify(e.message, 'err'));
+  };
+  el('localRefreshBtn').onclick = () => loadLocalFiles(state.fileLocalPath).catch((e) => notify(e.message, 'err'));
+  el('localUploadToGroup').onclick = () => runAction('localUploadToGroup', () => uploadLocalToGroup(), '上传中...');
+  el('localMkdir').onclick = () => createLocalFolder();
+  el('localPathInput').onkeydown = (evt) => {
+    if (evt.key === 'Enter') el('localGoBtn').click();
+  };
+
+  el('fileGroupSelect').onchange = () => {
+    state.fileGroupId = el('fileGroupSelect').value;
+    state.fileGroupPath = [];
+    el('groupFolderLabel').textContent = '根目录';
+    if (state.fileGroupId) {
+      loadGroupFiles(state.fileGroupId, '').catch((e) => notify(e.message, 'err'));
+    } else {
+      state.fileGroupEntries = { files: [], folders: [] };
+      renderGroupFiles();
+    }
+  };
+  el('refreshGroupFiles').onclick = () => {
+    if (!state.fileGroupId) return notify('请先选择群聊', 'warn');
+    const folderId = state.fileGroupPath.length ? state.fileGroupPath[state.fileGroupPath.length - 1].id : '';
+    loadGroupFiles(state.fileGroupId, folderId).catch((e) => notify(e.message, 'err'));
+  };
+  el('groupGoUp').onclick = () => navigateGroupUp();
+  el('groupDownloadSelected').onclick = () => runAction('groupDownloadSelected', () => downloadSelectedGroupFiles(), '下载中...');
+  el('groupDeleteSelected').onclick = () => runAction('groupDeleteSelected', () => deleteSelectedGroupFiles(), '删除中...');
+  el('groupMkdir').onclick = () => {
+    if (!state.fileGroupId) return notify('请先选择群聊', 'warn');
+    createGroupFolder();
   };
 
   el('pullHistory').onclick = () => runAction('pullHistory', () => pullHistory({ append: true }), '拉取中...');
@@ -1431,6 +1818,35 @@ function bindEvents() {
     syncSelfColorPreview();
     renderMessages();
     notify('我的消息背景色已应用', 'ok');
+    }, '应用中...');
+  };
+  // background opacity
+  el('bgOpacity').oninput = () => {
+    el('bgOpacityLabel').textContent = `${el('bgOpacity').value}%`;
+  };
+  el('saveBgOpacity').onclick = () => {
+    runAction('saveBgOpacity', async () => {
+    state.custom.bgOpacity = Number(el('bgOpacity').value) || 20;
+    await saveCustomSettings();
+    applyCustomStyles();
+    notify('背景透明度已应用', 'ok');
+    }, '应用中...');
+  };
+  // background position X
+  el('bgPosX').oninput = () => {
+    el('bgPosXLabel').textContent = `${el('bgPosX').value}%`;
+  };
+  // background position Y
+  el('bgPosY').oninput = () => {
+    el('bgPosYLabel').textContent = `${el('bgPosY').value}%`;
+  };
+  el('saveBgPosition').onclick = () => {
+    runAction('saveBgPosition', async () => {
+    state.custom.bgPosX = Number(el('bgPosX').value) || 50;
+    state.custom.bgPosY = Number(el('bgPosY').value) || 50;
+    await saveCustomSettings();
+    applyCustomStyles();
+    notify('背景位置已应用', 'ok');
     }, '应用中...');
   };
   el('refreshLogs').onclick = () => runAction('refreshLogs', async () => {

@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
+  <div id="bgLayer" class="bg-layer"></div>
   <header>
     <span>easy_qq（NapCat反向WS）<span id="connBadge" class="badge">启动中</span></span>
     <div id="selfInfo" class="self-info">
@@ -21,6 +22,7 @@
   <div id="mobileDesktopTip" class="mobile-tip">完整功能请在电脑浏览器打开</div>
   <div class="tabs">
     <button id="tabConsole" class="tab-btn active">消息控制台</button>
+    <button id="tabFiles" class="tab-btn">文件管理</button>
     <button id="tabDevices" class="tab-btn">设备管理</button>
     <button id="tabSettings" class="tab-btn">个性化设置</button>
     <button id="tabLogs" class="tab-btn">日志</button>
@@ -51,7 +53,6 @@
         <div class="row">
           <button id="clearWl" class="secondary">清空白名单</button>
         </div>
-        <div id="wlList" class="list"></div>
       </div>
 
       <div class="panel chat-panel">
@@ -88,6 +89,42 @@
     </div>
   </div>
 
+  <div id="pageFiles" class="page">
+    <div class="main file-main">
+      <div class="panel file-panel">
+        <div class="section-title">本机文件</div>
+        <div class="row file-nav-row">
+          <button id="localGoUp" class="secondary" title="上级目录">← 上级</button>
+          <input id="localPathInput" placeholder="当前路径" />
+          <button id="localGoBtn">跳转</button>
+          <button id="localRefreshBtn" class="secondary">刷新</button>
+        </div>
+        <div class="file-list" id="localFileList"></div>
+        <div class="row file-actions">
+          <button id="localUploadToGroup" class="success">上传选中文件到群</button>
+          <button id="localMkdir" class="secondary">新建文件夹</button>
+        </div>
+      </div>
+      <div class="panel file-panel">
+        <div class="section-title">群文件</div>
+        <div class="row">
+          <select id="fileGroupSelect"><option value="">-- 选择群聊 --</option></select>
+          <button id="refreshGroupFiles">刷新</button>
+        </div>
+        <div class="row file-nav-row">
+          <button id="groupGoUp" class="secondary" title="上级目录">← 上级</button>
+          <span id="groupFolderLabel" class="help">根目录</span>
+        </div>
+        <div class="file-list" id="groupFileList"></div>
+        <div class="row file-actions">
+          <button id="groupDownloadSelected">下载选中文件</button>
+          <button id="groupDeleteSelected" class="secondary">删除选中</button>
+          <button id="groupMkdir" class="secondary">新建文件夹</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="pageDevices" class="page">
     <div class="main device-main">
       <div class="panel">
@@ -115,16 +152,45 @@
     <div class="main settings-main">
       <div class="panel">
         <div class="section-title">个性化设置</div>
+
+        <div class="section-title">背景图片</div>
+        <div class="help">设置页面全局背景图。填写图片URL或选择本机图片上传，点击"应用背景"生效。</div>
         <div class="row">
-          <input id="bgImageUrl" placeholder="背景图 URL（可空）" />
+          <input id="bgImageUrl" placeholder="背景图 URL，例如 https://example.com/bg.jpg 或 /files/xxx.png" />
           <button id="pickBgImage" class="secondary" type="button">选择本机背景图</button>
           <button id="saveBgImage">应用背景</button>
         </div>
         <input id="bgImagePicker" type="file" accept="image/*" hidden />
+
+        <div class="section-title">背景透明度</div>
+        <div class="help">控制背景图的不透明度。数值越小背景越淡（越透明），100%为完全不透明。</div>
+        <div class="row settings-slider-row">
+          <input id="bgOpacity" type="range" min="5" max="100" value="20" />
+          <span id="bgOpacityLabel" class="slider-label">20%</span>
+          <button id="saveBgOpacity" class="secondary">应用透明度</button>
+        </div>
+
+        <div class="section-title">背景图位置</div>
+        <div class="help">调整背景图在页面中的显示位置。X=50 Y=50 为居中，X=0 Y=0 为左上角，X=100 Y=100 为右下角。</div>
+        <div class="row settings-slider-row">
+          <span class="help">水平 X:</span>
+          <input id="bgPosX" type="range" min="0" max="100" value="50" />
+          <span id="bgPosXLabel" class="slider-label">50%</span>
+        </div>
+        <div class="row settings-slider-row">
+          <span class="help">垂直 Y:</span>
+          <input id="bgPosY" type="range" min="0" max="100" value="50" />
+          <span id="bgPosYLabel" class="slider-label">50%</span>
+        </div>
         <div class="row">
-          <span class="help">点击颜色方块选取颜色</span>
+          <button id="saveBgPosition" class="secondary">应用背景位置</button>
+        </div>
+
+        <div class="section-title">我的消息背景色</div>
+        <div class="help">设置自己发送的消息气泡背景颜色，用于区分自己和别人的消息。</div>
+        <div class="row">
           <input id="selfMsgColorCode" readonly />
-          <input id="selfMsgColorPicker" type="color" class="color-preview color-input" title="选择颜色" />
+          <input id="selfMsgColorPicker" type="color" class="color-preview color-input" title="点击选取颜色" />
           <button id="saveSelfColor" class="secondary">应用我的消息背景色</button>
         </div>
       </div>
