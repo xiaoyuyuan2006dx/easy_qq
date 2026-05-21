@@ -28,6 +28,19 @@ npm start
 
 > 页面会显示自动识别到的本机 IP，可直接复制给 NapCat 使用。
 
+### 1.3 Docker 部署
+
+```bash
+docker build -t easy_qq .
+docker run -d --name easy_qq -p 18080:18080 -v easy_qq_data:/app/data easy_qq
+```
+
+构建时可指定 npm 代理：
+
+```bash
+docker build --build-arg NPM_PROXY=http://host.docker.internal:7897 -t easy_qq .
+```
+
 ---
 
 ## 2. 两种 token 的区别（非常重要）
