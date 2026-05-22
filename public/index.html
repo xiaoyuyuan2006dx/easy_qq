@@ -77,12 +77,16 @@
             </div>
             <div class="row text-send-row">
               <div class="text-send-wrap">
-                <textarea id="textMsg" placeholder="文本内容（可空）"></textarea>
-                <button id="sendMsg">发送到当前会话</button>
+                <textarea id="textMsg" placeholder="文本内容（可空，Ctrl+Enter 发送）"></textarea>
+                <div class="send-btn-group">
+                  <button id="sendMsg">发送到当前会话</button>
+                  <span class="shortcut-hint">Ctrl+Enter</span>
+                </div>
               </div>
             </div>
             <input id="imagePicker" type="file" accept="image/*" hidden />
             <input id="filePicker" type="file" hidden />
+            <input id="webkitDirPicker" type="file" webkitdirectory hidden />
           </div>
         </div>
       </div>
@@ -93,16 +97,28 @@
     <div class="main file-main">
       <div class="panel file-panel">
         <div class="section-title">本机文件</div>
-        <div class="row file-nav-row">
+        <div class="row file-mode-row">
+          <button id="localModeServer" class="mode-btn active">容器存储</button>
+          <button id="localModeClient" class="mode-btn">本机电脑</button>
+        </div>
+        <div id="localNavServer" class="row file-nav-row">
           <button id="localGoUp" class="secondary" title="上级目录">← 上级</button>
           <input id="localPathInput" placeholder="当前路径" />
           <button id="localGoBtn">跳转</button>
           <button id="localRefreshBtn" class="secondary">刷新</button>
         </div>
+        <div id="localNavClient" class="row file-nav-row" style="display:none">
+          <button id="clientGoUp" class="secondary" title="上级目录">← 上级</button>
+          <span id="clientDirLabel" class="help">未选择目录</span>
+          <button id="clientPickDir" class="secondary">选择目录</button>
+          <button id="clientRefreshBtn" class="secondary">刷新</button>
+        </div>
         <div class="file-list" id="localFileList"></div>
         <div class="row file-actions">
-          <button id="localUploadToGroup" class="success">上传选中文件到群</button>
+          <button id="localUploadToGroup" class="success">上传选中到群</button>
           <button id="localMkdir" class="secondary">新建文件夹</button>
+          <button id="localSetBg" class="secondary">设为背景</button>
+          <button id="localRename" class="secondary">重命名</button>
         </div>
       </div>
       <div class="panel file-panel">
@@ -116,9 +132,13 @@
           <span id="groupFolderLabel" class="help">根目录</span>
         </div>
         <div class="file-list" id="groupFileList"></div>
+        <div class="help" style="margin:4px 0;color:#6b7280;font-size:11px;">移动/重命名/删除仅群主/管理员有权限；上传者信息来自 NapCat 接口，若无显示则为接口未返回</div>
         <div class="row file-actions">
-          <button id="groupDownloadSelected">下载选中文件</button>
+          <button id="groupDownloadSelected">下载选中</button>
+          <button id="groupCopyToLeft" class="success">复制并移动到左侧</button>
           <button id="groupDeleteSelected" class="secondary">删除选中</button>
+          <button id="groupRename" class="secondary">重命名</button>
+          <button id="groupMove" class="secondary">移动</button>
           <button id="groupMkdir" class="secondary">新建文件夹</button>
         </div>
       </div>
@@ -129,10 +149,10 @@
     <div class="main device-main">
       <div class="panel">
         <div class="section-title">访问设置</div>
-        <div class="help">服务固定监听 `0.0.0.0`，无需再维护设备地址规则。</div>
+        <div class="help">设置访问密码。任何人知道此密码即可通过网页管理NapCat。首次使用默认密码为 <code>easyqq</code>。</div>
         <div class="row"><input id="wsToken" placeholder="NapCat websocketClients token" /></div>
         <div class="row"><button id="saveToken">保存反向WS Token</button></div>
-        <div id="accessTokenRow" class="row"><input id="accessToken" placeholder="全局访问token（可空，不填则无需token）" /></div>
+        <div id="accessTokenRow" class="row"><input id="accessToken" placeholder="访问密码（至少4位）" /></div>
         <div id="accessTokenActionRow" class="row">
           <button id="saveAccessToken">保存访问Token</button>
           <button id="refreshDevices" class="secondary">刷新设备状态</button>
@@ -150,48 +170,49 @@
 
   <div id="pageSettings" class="page">
     <div class="main settings-main">
-      <div class="panel">
+      <div class="panel settings-panel">
         <div class="section-title">个性化设置</div>
+        <div class="help">修改后实时预览，点击底部"保存设置"持久化到服务器。</div>
 
-        <div class="section-title">背景图片</div>
-        <div class="help">设置页面全局背景图。填写图片URL或选择本机图片上传，点击"应用背景"生效。</div>
-        <div class="row">
-          <input id="bgImageUrl" placeholder="背景图 URL，例如 https://example.com/bg.jpg 或 /files/xxx.png" />
-          <button id="pickBgImage" class="secondary" type="button">选择本机背景图</button>
-          <button id="saveBgImage">应用背景</button>
-        </div>
-        <input id="bgImagePicker" type="file" accept="image/*" hidden />
-
-        <div class="section-title">背景透明度</div>
-        <div class="help">控制背景图的不透明度。数值越小背景越淡（越透明），100%为完全不透明。</div>
-        <div class="row settings-slider-row">
-          <input id="bgOpacity" type="range" min="5" max="100" value="20" />
-          <span id="bgOpacityLabel" class="slider-label">20%</span>
-          <button id="saveBgOpacity" class="secondary">应用透明度</button>
+        <div class="settings-group">
+          <div class="settings-group-title">背景图片</div>
+          <div class="row">
+            <input id="bgImageUrl" placeholder="背景图 URL，例如 https://example.com/bg.jpg 或 /files/xxx.png" />
+            <button id="pickBgImage" class="secondary" type="button">选择本机图</button>
+          </div>
+          <input id="bgImagePicker" type="file" accept="image/*" hidden />
         </div>
 
-        <div class="section-title">背景图位置</div>
-        <div class="help">调整背景图在页面中的显示位置。X=50 Y=50 为居中，X=0 Y=0 为左上角，X=100 Y=100 为右下角。</div>
-        <div class="row settings-slider-row">
-          <span class="help">水平 X:</span>
-          <input id="bgPosX" type="range" min="0" max="100" value="50" />
-          <span id="bgPosXLabel" class="slider-label">50%</span>
-        </div>
-        <div class="row settings-slider-row">
-          <span class="help">垂直 Y:</span>
-          <input id="bgPosY" type="range" min="0" max="100" value="50" />
-          <span id="bgPosYLabel" class="slider-label">50%</span>
-        </div>
-        <div class="row">
-          <button id="saveBgPosition" class="secondary">应用背景位置</button>
+        <div class="settings-group">
+          <div class="settings-group-title">背景显示</div>
+          <div class="settings-inline-row">
+            <label>透明度 <span id="bgOpacityLabel" class="slider-label">20%</span></label>
+            <input id="bgOpacity" type="range" min="5" max="100" value="20" />
+          </div>
+          <div class="settings-inline-row">
+            <label>水平 <span id="bgPosXLabel" class="slider-label">50%</span></label>
+            <input id="bgPosX" type="range" min="0" max="100" value="50" />
+          </div>
+          <div class="settings-inline-row">
+            <label>垂直 <span id="bgPosYLabel" class="slider-label">50%</span></label>
+            <input id="bgPosY" type="range" min="0" max="100" value="50" />
+          </div>
         </div>
 
-        <div class="section-title">我的消息背景色</div>
-        <div class="help">设置自己发送的消息气泡背景颜色，用于区分自己和别人的消息。</div>
-        <div class="row">
-          <input id="selfMsgColorCode" readonly />
-          <input id="selfMsgColorPicker" type="color" class="color-preview color-input" title="点击选取颜色" />
-          <button id="saveSelfColor" class="secondary">应用我的消息背景色</button>
+        <div class="settings-group">
+          <div class="settings-group-title">消息气泡配色</div>
+          <div class="settings-inline-row bubble-color-row">
+            <label>我的气泡</label>
+            <input id="selfMsgColorCode" readonly />
+            <input id="selfMsgColorPicker" type="color" class="color-preview color-input" title="点击选取颜色" />
+            <span class="bubble-sep">|</span>
+            <label class="others-label">他人配色</label>
+            <div class="color-preset-row" id="colorPresets"></div>
+          </div>
+        </div>
+
+        <div class="row settings-save-row">
+          <button id="saveAllSettings">保存设置</button>
         </div>
       </div>
     </div>
@@ -224,6 +245,16 @@
         <button id="authLoginBtn">进入</button>
       </div>
       <div id="authTip" class="help"></div>
+    </div>
+  </div>
+  <div id="changePasswordModal" class="img-modal">
+    <div class="conv-modal-content auth-modal-content">
+      <div class="section-title">设置新密码</div>
+      <div class="help">检测到您正在使用默认密码，请立即设置一个新的访问密码以确保安全。</div>
+      <div class="row"><input id="newPasswordInput" type="password" placeholder="新密码（至少4位）" /></div>
+      <div class="row"><input id="confirmPasswordInput" type="password" placeholder="确认新密码" /></div>
+      <div class="row" style="justify-content:flex-end;"><button id="changePasswordBtn">确认设置</button></div>
+      <div id="changePasswordTip" class="help" style="color:#dc2626;"></div>
     </div>
   </div>
   <div id="convManageModal" class="img-modal">

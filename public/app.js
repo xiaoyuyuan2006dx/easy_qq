@@ -19,8 +19,9 @@ const state = {
   logs: [],
   auditLogs: [],
   logFilter: { debug: true, info: true, warn: true, error: true, system: true },
-  custom: { bgImageUrl: '', bgOpacity: 20, bgPosX: 50, bgPosY: 50, selfMsgColor: '#dbeafe' },
+  custom: { bgImageUrl: '/files/default.png', bgOpacity: 100, bgPosX: 50, bgPosY: 20, selfMsgColor: '#ffe4a8' },
   authed: false,
+  loginFailures: 0,
   selfId: '',
   selfNickname: '',
   fileLocalPath: '',
@@ -31,6 +32,13 @@ const state = {
   fileGroupEntries: { files: [], folders: [] },
   fileLocalSelected: new Set(),
   fileGroupSelected: new Set(),
+  fileLocalMode: 'server',
+  fileClientDirHandle: null,
+  fileClientDirName: '',
+  fileClientHandleStack: [],
+  fileClientEntries: [],
+  fileClientSelected: new Set(),
+  fileClientWebkitPath: '',
 };
 
 const el = (id) => document.getElementById(id);
@@ -40,6 +48,27 @@ const URL_TOKEN = String(new URLSearchParams(window.location.search).get('access
 const REPOSITORY_URL = 'https://github.com/xiaoyuyuan2006dx/easy_qq';
 const GROUP_REMOVED_HINT = '你已被移出群聊';
 let PINYIN_DICT = {};
+
+function nameWithoutExtension(filename) {
+  const name = String(filename || '');
+  const dot = name.lastIndexOf('.');
+  return dot > 0 ? name.slice(0, dot) : name;
+}
+
+function fileExtension(filename) {
+  const name = String(filename || '');
+  const dot = name.lastIndexOf('.');
+  return dot > 0 ? name.slice(dot) : '';
+}
+
+function getUploaderName(entry) {
+  return String(
+    entry.uploader_name || entry.uploaderName || entry.uploader ||
+    entry.uploader_nick || entry.uploaderNick || entry.sender_name ||
+    entry.senderName || entry.owner_name || entry.ownerName ||
+    entry.owner || entry.creator_name || entry.creatorName || ''
+  ).trim() || '未知';
+}
 
 function toTitleCasePinyinWord(raw) {
   const text = String(raw || '');
@@ -90,9 +119,49 @@ function parseConvKey(key) {
   if (!(type === 'group' || type === 'private') || !id) return null;
   return { type, id };
 }
+// --- Shanghai time helpers ---
+function shanghaiNow() {
+  const s = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' });
+  const [date, time] = s.split(' ');
+  const [y, m, d] = date.split('-').map(Number);
+  const [hh, mm, ss] = time.split(':').map(Number);
+  return { y, m, d, hh, mm, ss };
+}
+
+function formatShanghaiTime(ts) {
+  const d = new Date(ts * 1000);
+  const s = d.toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' });
+  const [date, time] = s.split(' ');
+  return `${date} ${time}`;
+}
+
+function formatShanghaiHHMMSS(ts) {
+  const d = new Date(ts * 1000);
+  const s = d.toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' });
+  return s.split(' ')[1];
+}
+
+function formatShanghaiDate(ts) {
+  const d = new Date(ts * 1000);
+  return d.toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' }).split(' ')[0];
+}
+
+function formatShanghaiFull(ts) {
+  return formatShanghaiTime(ts);
+}
+
+function formatShanghaiFileTime(ms) {
+  if (!ms) return '';
+  const d = new Date(ms);
+  const s = d.toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' });
+  const [date, time] = s.split(' ');
+  const hhmm = time.slice(0, 5);
+  return `${date} ${hhmm}`;
+}
+
 function todayStartSec() {
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+  const sh = shanghaiNow();
+  const start = new Date(sh.y, sh.m - 1, sh.d, 0, 0, 0);
   return Math.floor(start.getTime() / 1000);
 }
 function nowSec() { return Math.floor(Date.now() / 1000); }
@@ -140,7 +209,7 @@ async function uploadLocalFile(file, kind) {
 let toastTimer = null;
 function addLog(level, text) {
   state.logs.push({
-    time: new Date().toISOString(),
+    time: formatShanghaiFull(nowSec()),
     level: String(level || 'info').toLowerCase(),
     text: String(text || ''),
   });
@@ -153,7 +222,7 @@ async function refreshAuditLogsData() {
     const res = await api('/backend/logs/audit');
     const rows = Array.isArray(res && res.data) ? res.data : [];
     state.auditLogs = rows.map((row) => ({
-      time: String(row.time || new Date().toISOString()),
+      time: String(row.time || formatShanghaiFull(nowSec())),
       level: String((row.level || 'info')).toLowerCase(),
       text: `[server:${row.action || 'audit'}] ip=${row.ip || '-'} host=${row.host || '-'} detail=${JSON.stringify(row.detail || {})}`,
     }));
@@ -179,7 +248,11 @@ function notify(message, type = 'ok') {
 function showAuthModal(tip = '请输入访问Token') {
   const preset = URL_TOKEN || getClientToken();
   if (preset) el('authTokenInput').value = preset;
-  el('authTip').textContent = tip;
+  if (state.loginFailures >= 3) {
+    el('authTip').innerHTML = '已连续失败3次。<br><br><strong>忘记密码？</strong>请通过SSH登录服务器，编辑 <code>data/store.json</code> 文件，将 <code>accessToken</code> 字段的值改为 <code>"easyqq"</code> 即可恢复默认密码，然后重新访问此页面。';
+  } else {
+    el('authTip').textContent = tip;
+  }
   document.body.classList.add('auth-locked');
   el('authModal').classList.add('show');
   document.body.style.overflow = 'hidden';
@@ -188,6 +261,19 @@ function showAuthModal(tip = '请输入访问Token') {
 function hideAuthModal() {
   document.body.classList.remove('auth-locked');
   el('authModal').classList.remove('show');
+  document.body.style.overflow = '';
+}
+
+function showChangePasswordModal() {
+  el('newPasswordInput').value = '';
+  el('confirmPasswordInput').value = '';
+  el('changePasswordTip').textContent = '';
+  el('changePasswordModal').classList.add('show');
+  document.body.style.overflow = 'hidden';
+}
+
+function hideChangePasswordModal() {
+  el('changePasswordModal').classList.remove('show');
   document.body.style.overflow = '';
 }
 
@@ -377,8 +463,7 @@ function renderMobileConvSelect(selectedList) {
 }
 
 function getDateLabel(ts) {
-  const d = new Date(ts * 1000);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return formatShanghaiDate(ts);
 }
 
 function renderMessages() {
@@ -419,8 +504,7 @@ function renderMessages() {
     const prefix = document.createElement('span');
     prefix.className = 'msg-prefix';
     // time link (click to reply)
-    const d = new Date((m.time || nowSec()) * 1000);
-    const timeText = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+    const timeText = formatShanghaiHHMMSS(m.time || nowSec());
     const timeLink = document.createElement('a');
     timeLink.href = '#';
     timeLink.textContent = timeText;
@@ -522,11 +606,12 @@ function closeImageModal() {
 
 function senderColorBg(sender) {
   const normalized = String(sender || 'unknown');
-  if (normalized.toLowerCase() === 'me' || normalized === state.selfNickname) return state.custom.selfMsgColor || '#dbeafe';
+  if (normalized.toLowerCase() === 'me' || normalized === state.selfNickname) return state.custom.selfMsgColor || '#ffe4a8';
+  const theme = CHAT_THEMES.find((t) => t.name === getChatTheme()) || CHAT_THEMES[0];
   let hash = 0;
   for (let i = 0; i < normalized.length; i++) hash = (hash * 31 + normalized.charCodeAt(i)) | 0;
-  const hue = Math.abs(hash) % 360;
-  return `hsl(${hue}, 70%, 95%)`;
+  const hue = (Math.abs(hash) % 360 + (theme.hueShift || 0)) % 360;
+  return `hsl(${hue}, ${theme.sat}%, ${theme.light}%)`;
 }
 
 function isSelfMessage(msg) {
@@ -542,7 +627,13 @@ function normalizedSenderName(msg) {
   if (isSelfMessage(msg)) {
     return String(state.selfNickname || (msg && msg.sender) || '我');
   }
-  return String((msg && msg.sender) || 'unknown');
+  // prefer card/nickname; show QQ号 only as last resort
+  const sender = String((msg && msg.sender) || 'unknown');
+  const userId = String((msg && msg.user_id) || '');
+  if (/^\d{5,12}$/.test(sender) && userId && sender === userId) {
+    return userId; // sender is just the raw QQ号
+  }
+  return sender;
 }
 
 function createInlineLink(text, onClick) {
@@ -811,7 +902,16 @@ function switchTab(tab) {
   }
   if (tab === 'files') {
     refreshFileGroupSelect();
-    if (!state.fileLocalEntries.length) {
+    if (state.fileLocalMode === 'client') {
+      getStoredDirectoryHandle().then((handle) => {
+        if (handle) {
+          state.fileClientDirHandle = handle;
+          state.fileClientHandleStack = [{ name: handle.name, handle }];
+          el('clientDirLabel').textContent = handle.name;
+          return loadClientDirectory(handle);
+        }
+      }).catch(() => {});
+    } else if (!state.fileLocalEntries.length) {
       loadLocalFiles('').catch((e) => notify(e.message, 'err'));
     }
   }
@@ -820,14 +920,14 @@ function switchTab(tab) {
 
 function formatSec(ts) {
   if (!ts) return '-';
-  return new Date(ts * 1000).toLocaleString();
+  return formatShanghaiTime(ts);
 }
 
 function applyCustomStyles() {
   const bg = String(state.custom.bgImageUrl || '').trim();
-  const opacity = Number(state.custom.bgOpacity || 20) / 100;
+  const opacity = Number(state.custom.bgOpacity || 100) / 100;
   const posX = Number(state.custom.bgPosX || 50);
-  const posY = Number(state.custom.bgPosY || 50);
+  const posY = Number(state.custom.bgPosY || 20);
   document.body.style.setProperty('--bg-image', bg ? `url("${bg.replace(/"/g, '\\"')}")` : 'none');
   document.body.style.setProperty('--bg-opacity', String(opacity));
   document.body.style.setProperty('--bg-position', `${posX}% ${posY}%`);
@@ -835,19 +935,108 @@ function applyCustomStyles() {
 }
 
 function syncSelfColorPreview() {
-  const value = String(state.custom.selfMsgColor || '#dbeafe');
+  const value = String(state.custom.selfMsgColor || '#ffe4a8');
   el('selfMsgColorPicker').value = value;
   el('selfMsgColorCode').value = value;
+}
+
+const CHAT_THEMES = [
+  { name: '柔和', sat: 50, light: 94, hueShift: 0 },
+  { name: '清凉', sat: 45, light: 91, hueShift: 200 },
+  { name: '暖阳', sat: 65, light: 90, hueShift: 35 },
+  { name: '鲜明', sat: 80, light: 85, hueShift: 0 },
+  { name: '素雅', sat: 18, light: 93, hueShift: 0 },
+  { name: '深邃', sat: 45, light: 78, hueShift: 0 },
+  { name: '桃色', sat: 55, light: 92, hueShift: 15 },
+  { name: '薄荷', sat: 50, light: 90, hueShift: 150 },
+  { name: '薰衣草', sat: 55, light: 91, hueShift: 270 },
+  { name: '琥珀', sat: 70, light: 87, hueShift: 40 },
+  { name: '青灰', sat: 15, light: 88, hueShift: 210 },
+  { name: '珊瑚', sat: 75, light: 88, hueShift: 10 },
+];
+
+function getChatTheme() {
+  return state.custom.chatTheme || '柔和';
+}
+
+const CHAT_THEME_PREVIEW_HUES = [210, 140, 30];
+
+function renderChatThemes() {
+  const container = el('colorPresets');
+  if (!container) return;
+  container.innerHTML = '';
+  const active = getChatTheme();
+  const activeTheme = CHAT_THEMES.find((t) => t.name === active) || CHAT_THEMES[0];
+
+  // trigger button
+  const trigger = document.createElement('button');
+  trigger.className = 'chat-theme-trigger';
+  trigger.innerHTML =
+    '<span class="chat-theme-dots">' +
+    CHAT_THEME_PREVIEW_HUES.map((h) =>
+      `<span class="chat-theme-dot" style="background:hsl(${h},${activeTheme.sat}%,${activeTheme.light}%)"></span>`
+    ).join('') +
+    '</span>' +
+    `<span>${activeTheme.name}</span>` +
+    '<span class="chat-theme-arrow">▾</span>';
+  trigger.title = '点击选择他人气泡配色';
+  container.appendChild(trigger);
+
+  // popup panel
+  const popup = document.createElement('div');
+  popup.className = 'chat-theme-popup';
+  popup.style.display = 'none';
+  CHAT_THEMES.forEach((t) => {
+    const row = document.createElement('button');
+    row.className = 'chat-theme-row';
+    if (t.name === active) row.classList.add('active');
+    row.innerHTML =
+      '<span class="chat-theme-dots">' +
+      CHAT_THEME_PREVIEW_HUES.map((h) =>
+        `<span class="chat-theme-dot" style="background:hsl(${h},${t.sat}%,${t.light}%)"></span>`
+      ).join('') +
+      '</span>' +
+      `<span>${t.name}</span>`;
+    row.title = `${t.name} · 饱和度${t.sat}% 亮度${t.light}%`;
+    row.onclick = (evt) => {
+      evt.stopPropagation();
+      state.custom.chatTheme = t.name;
+      renderMessages();
+      renderChatThemes();
+    };
+    popup.appendChild(row);
+  });
+  container.appendChild(popup);
+
+  trigger.onclick = (evt) => {
+    evt.stopPropagation();
+    const isOpen = popup.style.display === 'block';
+    closeAllThemePopups();
+    if (!isOpen) popup.style.display = 'block';
+  };
+
+  // close popup on outside click
+  if (!window._themePopupCloseBound) {
+    window._themePopupCloseBound = true;
+    document.addEventListener('click', closeAllThemePopups);
+  }
+}
+
+function closeAllThemePopups() {
+  document.querySelectorAll('.chat-theme-popup').forEach((p) => {
+    p.style.display = 'none';
+  });
 }
 
 async function loadCustomSettings() {
   const res = await api('/backend/ui-settings');
   const parsed = res && res.data ? res.data : {};
-  state.custom.bgImageUrl = String(parsed.bgImageUrl || '');
-  state.custom.bgOpacity = Number(parsed.bgOpacity || 20);
+  state.custom.bgImageUrl = String(parsed.bgImageUrl || '/files/default.png');
+  state.custom.bgOpacity = Number(parsed.bgOpacity || 100);
   state.custom.bgPosX = Number(parsed.bgPosX || 50);
-  state.custom.bgPosY = Number(parsed.bgPosY || 50);
-  state.custom.selfMsgColor = String(parsed.selfMsgColor || '#dbeafe');
+  state.custom.bgPosY = Number(parsed.bgPosY || 20);
+  state.custom.selfMsgColor = String(parsed.selfMsgColor || '#ffe4a8');
+  state.custom.chatTheme = String(parsed.chatTheme || '柔和');
   localStorage.setItem(UI_CACHE_KEY, JSON.stringify(state.custom));
 }
 
@@ -858,6 +1047,7 @@ async function saveCustomSettings() {
     bgPosX: state.custom.bgPosX,
     bgPosY: state.custom.bgPosY,
     selfMsgColor: state.custom.selfMsgColor,
+    chatTheme: state.custom.chatTheme,
   });
   localStorage.setItem(UI_CACHE_KEY, JSON.stringify(state.custom));
 }
@@ -885,6 +1075,7 @@ function syncSettingsToUI() {
   el('bgPosY').value = state.custom.bgPosY || 50;
   el('bgPosYLabel').textContent = `${state.custom.bgPosY || 50}%`;
   syncSelfColorPreview();
+  renderChatThemes();
 }
 
 function renderLogs() {
@@ -938,20 +1129,18 @@ function renderDevices() {
 async function refreshDevices() {
   const res = await api('/backend/devices');
   state.devices = res.data || [];
-  const tokenManageAllowed = !!res.tokenManageAllowed;
-  state.accessToken = tokenManageAllowed ? String(res.accessToken || '') : '';
-  if (tokenManageAllowed) el('accessToken').value = state.accessToken;
+  state.accessToken = String(res.accessToken || '');
+  el('accessToken').value = state.accessToken;
   renderDevices();
 }
 
 async function saveAccessToken() {
-  if (el('saveAccessToken').style.display === 'none') {
-    return notify('当前登录方式不可修改访问Token', 'warn');
-  }
   const token = el('accessToken').value.trim();
+  if (!token || token.length < 4) return notify('密码至少需要4位字符', 'warn');
   await api('/backend/access-token', 'POST', { token });
   state.accessToken = token;
-  notify('访问Token已保存', 'ok');
+  setClientToken(token);
+  notify('访问密码已更新', 'ok');
 }
 
 async function refreshHealth() {
@@ -959,27 +1148,24 @@ async function refreshHealth() {
   state.authed = true;
   state.wsToken = health.wsToken;
   state.accessToken = String(health.accessToken || '');
+  state.loginFailures = Number(health.loginFailures || 0);
   state.localIp = String(health.localIp || '');
   state.selfId = String((health.napcat && health.napcat.selfId) || state.selfId || '');
+  state.selfNickname = String((health.napcat && health.napcat.nickname) || state.selfNickname || '');
   const clientIp = String(health.clientIp || '');
   const clientIpRaw = String(health.clientIpRaw || '');
-  const tokenManageAllowed = !!health.tokenManageAllowed;
   el('wsToken').value = state.wsToken;
-  const tokenInput = el('accessToken');
-  const tokenRow = el('accessTokenRow');
-  const tokenActionRow = el('accessTokenActionRow');
-  const tokenHint = el('accessTokenHint');
-  tokenInput.value = tokenManageAllowed ? state.accessToken : '';
-  tokenInput.readOnly = !tokenManageAllowed;
-  tokenInput.placeholder = tokenManageAllowed ? '全局访问token（可空，不填则无需token）' : '当前登录方式不可查看访问Token';
-  tokenRow.style.display = tokenManageAllowed ? '' : 'none';
-  tokenActionRow.style.display = '';
-  el('saveAccessToken').style.display = tokenManageAllowed ? '' : 'none';
-  tokenHint.textContent = tokenManageAllowed ? '' : '仅当使用 127.0.0.1 或本机IP 访问时，才能查看和修改访问Token。';
-  el('wsTip').textContent = 'NapCat的ws客户端填写地址：ws://你的IP：18080/ws?access_token=你的wstoken';
+  el('accessToken').value = state.accessToken;
+  el('accessToken').readOnly = false;
+  el('accessToken').placeholder = '访问密码（至少4位）';
+  el('accessTokenRow').style.display = '';
+  el('accessTokenActionRow').style.display = '';
+  el('saveAccessToken').style.display = '';
+  el('accessTokenHint').textContent = '设置访问密码，任何人知道此密码即可通过网页管理NapCat。';
+  el('wsTip').textContent = 'NapCat 的 ws 客户端填写地址：ws://你的IP:18080/ws?access_token=你的wstoken';
   el('wsTipIp').textContent = `自动识别本机IP：${state.localIp || '-'}`;
   el('visitIp').textContent = `你的访问IP：${clientIp || '-'}${clientIpRaw && clientIpRaw !== clientIp ? `（raw: ${clientIpRaw}）` : ''}`;
-  el('selfQq').textContent = `QQ: ${state.selfId || '-'}`;
+  el('selfQq').textContent = state.selfNickname ? `${state.selfNickname} (${state.selfId || '-'})` : `QQ: ${state.selfId || '-'}`;
   el('selfAvatar').src = state.selfId ? `https://q1.qlogo.cn/g?b=qq&nk=${encodeURIComponent(state.selfId)}&s=100` : '';
   el('versionStamp').textContent = String(health.versionStamp || '-');
   if (health.napcat.connected) setConn('NapCat已连接', true);
@@ -991,7 +1177,11 @@ async function tryLoginWithToken(token, showSuccess = true) {
   await loadInitial();
   if (!state.sse) connectRealtime();
   hideAuthModal();
+  state.loginFailures = 0;
   if (showSuccess) notify('登录成功', 'ok');
+  if (token === 'easyqq') {
+    setTimeout(() => showChangePasswordModal(), 500);
+  }
 }
 
 async function loadInitial() {
@@ -1369,9 +1559,60 @@ function formatSize(bytes) {
 }
 
 function formatFileTime(ms) {
-  if (!ms) return '';
-  const d = new Date(ms);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return formatShanghaiFileTime(ms);
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => { resolve(reader.result.split(',')[1]); };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+// --- File System Access API helpers (Chrome/Edge only) ---
+function hasFSApi() { return !!window.showDirectoryPicker; }
+function isSecureCtx() { return !!window.isSecureContext; }
+function hasWebkitDirSupport() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  return !!input.webkitdirectory || 'webkitdirectory' in input;
+}
+
+function openFSDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('easyqq-fs', 1);
+    req.onupgradeneeded = () => { req.result.createObjectStore('handles'); };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function storeDirectoryHandle(handle) {
+  try {
+    const db = await openFSDB();
+    const tx = db.transaction('handles', 'readwrite');
+    tx.objectStore('handles').put(handle, 'rootDir');
+    await new Promise((r) => { tx.oncomplete = r; });
+  } catch {}
+}
+
+async function getStoredDirectoryHandle() {
+  try {
+    const db = await openFSDB();
+    const tx = db.transaction('handles', 'readonly');
+    const handle = await new Promise((r) => {
+      const req = tx.objectStore('handles').get('rootDir');
+      req.onsuccess = () => r(req.result);
+      req.onerror = () => r(null);
+    });
+    if (!handle) return null;
+    const perm = await handle.queryPermission({ mode: 'readwrite' });
+    if (perm === 'granted') return handle;
+    const req = await handle.requestPermission({ mode: 'readwrite' });
+    return req === 'granted' ? handle : null;
+  } catch { return null; }
 }
 
 async function loadLocalFiles(dirPath) {
@@ -1392,19 +1633,40 @@ function renderLocalFiles() {
   pathInput.value = state.fileLocalPath || '';
   state.fileLocalEntries.forEach((entry) => {
     const row = document.createElement('div');
-    row.className = `file-item${entry.type === 'folder' ? ' folder-item' : ''}${state.fileLocalSelected.has(entry.path) ? ' selected' : ''}`;
+    const sel = state.fileLocalSelected.has(entry.path);
+    row.className = `file-item${entry.type === 'folder' ? ' folder-item' : ''}${sel ? ' selected' : ''}`;
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'file-checkbox';
+    cb.checked = sel;
+    cb.onclick = (evt) => {
+      evt.stopPropagation();
+      if (state.fileLocalSelected.has(entry.path)) {
+        state.fileLocalSelected.delete(entry.path);
+        row.classList.remove('selected');
+        cb.checked = false;
+      } else {
+        state.fileLocalSelected.add(entry.path);
+        row.classList.add('selected');
+        cb.checked = true;
+      }
+    };
     row.onclick = (evt) => {
+      if (evt.target === cb) return;
       if (entry.type === 'folder') {
         loadLocalFiles(entry.path).catch((e) => notify(e.message, 'err'));
         return;
       }
-      // toggle selection for files
+      // toggle selection on row click
       if (state.fileLocalSelected.has(entry.path)) {
         state.fileLocalSelected.delete(entry.path);
+        row.classList.remove('selected');
+        cb.checked = false;
       } else {
         state.fileLocalSelected.add(entry.path);
+        row.classList.add('selected');
+        cb.checked = true;
       }
-      renderLocalFiles();
     };
     const icon = document.createElement('span');
     icon.className = 'file-icon';
@@ -1418,12 +1680,20 @@ function renderLocalFiles() {
     const time = document.createElement('span');
     time.className = 'file-time';
     time.textContent = formatFileTime(entry.mtime);
+    row.appendChild(cb);
     row.appendChild(icon);
     row.appendChild(name);
     row.appendChild(size);
     row.appendChild(time);
     box.appendChild(row);
   });
+  if (!state.fileLocalEntries.length) {
+    const empty = document.createElement('div');
+    empty.className = 'help';
+    empty.style.cssText = 'padding:16px;text-align:center;color:#9ca3af;';
+    empty.textContent = '此目录为空';
+    box.appendChild(empty);
+  }
 }
 
 async function loadGroupFiles(groupId, folderId) {
@@ -1460,8 +1730,26 @@ function renderGroupFiles() {
   allItems.forEach((entry) => {
     const id = String(entry.file_id || entry.folder_id || entry.name || '');
     const row = document.createElement('div');
-    row.className = `file-item${entry._type === 'folder' ? ' folder-item' : ''}${state.fileGroupSelected.has(id) ? ' selected' : ''}`;
+    const sel = state.fileGroupSelected.has(id);
+    row.className = `file-item${entry._type === 'folder' ? ' folder-item' : ''}${sel ? ' selected' : ''}`;
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'file-checkbox';
+    cb.checked = sel;
+    cb.onclick = (evt) => {
+      evt.stopPropagation();
+      if (state.fileGroupSelected.has(id)) {
+        state.fileGroupSelected.delete(id);
+        row.classList.remove('selected');
+        cb.checked = false;
+      } else {
+        state.fileGroupSelected.add(id);
+        row.classList.add('selected');
+        cb.checked = true;
+      }
+    };
     row.onclick = (evt) => {
+      if (evt.target === cb) return;
       if (entry._type === 'folder') {
         const nextPath = [...(state.fileGroupPath || [])];
         nextPath.push({ id, name: String(entry.folder_name || entry.name || id) });
@@ -1472,10 +1760,13 @@ function renderGroupFiles() {
       }
       if (state.fileGroupSelected.has(id)) {
         state.fileGroupSelected.delete(id);
+        row.classList.remove('selected');
+        cb.checked = false;
       } else {
         state.fileGroupSelected.add(id);
+        row.classList.add('selected');
+        cb.checked = true;
       }
-      renderGroupFiles();
     };
     const icon = document.createElement('span');
     icon.className = 'file-icon';
@@ -1486,9 +1777,14 @@ function renderGroupFiles() {
     const size = document.createElement('span');
     size.className = 'file-size';
     size.textContent = entry._type === 'file' ? formatSize(Number(entry.size || entry.file_size || 0)) : '';
+    const uploader = document.createElement('span');
+    uploader.className = 'file-uploader';
+    uploader.textContent = getUploaderName(entry);
+    row.appendChild(cb);
     row.appendChild(icon);
     row.appendChild(name);
     row.appendChild(size);
+    row.appendChild(uploader);
     box.appendChild(row);
   });
 }
@@ -1602,6 +1898,503 @@ async function createLocalFolder() {
   loadLocalFiles(state.fileLocalPath).catch(() => {});
 }
 
+// --- container file operations ---
+
+async function setLocalFileAsBackground() {
+  if (!state.fileLocalSelected.size) return notify('请先选中一个文件', 'warn');
+  const selPath = [...state.fileLocalSelected][0];
+  // 使用 /files/ 端点（无需鉴权，CSS background-image 可正常加载）
+  const root = state.fileLocalRoot || '';
+  const relPath = root && selPath.startsWith(root)
+    ? selPath.slice(root.length).replace(/^[/\\]+/, '')
+    : selPath.replace(/\\/g, '/').split('/').pop();
+  const url = `/files/${relPath.split('/').map(encodeURIComponent).join('/')}`;
+  state.custom.bgImageUrl = url;
+  el('bgImageUrl').value = url;
+  await saveCustomSettings();
+  applyCustomStyles();
+  notify('已设为背景', 'ok');
+}
+
+async function renameSelectedLocalFile() {
+  if (state.fileLocalSelected.size !== 1) return notify('请只选中一个文件/文件夹进行重命名', 'warn');
+  const oldPath = [...state.fileLocalSelected][0];
+  const entry = state.fileLocalEntries.find((e) => e.path === oldPath);
+  const oldName = entry ? entry.name : oldPath.split('/').pop();
+  const isFolder = entry && entry.type === 'folder';
+  const oldExt = isFolder ? '' : fileExtension(oldName);
+  const defaultName = isFolder ? oldName : nameWithoutExtension(oldName);
+  const newName = prompt('请输入新名称:', defaultName);
+  if (!newName || !newName.trim()) return;
+  let finalName = newName.trim();
+  if (!isFolder && oldExt && !finalName.endsWith(oldExt)) finalName += oldExt;
+  if (finalName === oldName) return;
+  try {
+    await api('/backend/files/local/rename', 'POST', { path: oldPath, newName: finalName });
+    notify('重命名成功', 'ok');
+  } catch (e) {
+    notify(e.message, 'err');
+  }
+  loadLocalFiles(state.fileLocalPath).catch(() => {});
+}
+
+// --- left panel mode switching (server / client) ---
+
+async function switchLocalModeToServer() {
+  state.fileLocalMode = 'server';
+  el('localModeServer').classList.add('active');
+  el('localModeClient').classList.remove('active');
+  el('localNavServer').style.display = '';
+  el('localNavClient').style.display = 'none';
+  const setBgBtn = el('localSetBg');
+  if (setBgBtn) setBgBtn.style.display = '';
+  state.fileLocalSelected.clear();
+  state.fileClientSelected.clear();
+}
+
+async function switchLocalMode(mode) {
+  state.fileLocalMode = mode;
+  el('localModeServer').classList.toggle('active', mode === 'server');
+  el('localModeClient').classList.toggle('active', mode === 'client');
+  el('localNavServer').style.display = mode === 'server' ? '' : 'none';
+  el('localNavClient').style.display = mode === 'client' ? '' : 'none';
+  // 切换模式下按钮可见性
+  const setBgBtn = el('localSetBg');
+  if (setBgBtn) setBgBtn.style.display = mode === 'server' ? '' : 'none';
+  state.fileLocalSelected.clear();
+  state.fileClientSelected.clear();
+  if (mode === 'server') {
+    if (!state.fileLocalEntries.length) {
+      await loadLocalFiles('').catch((e) => notify(e.message, 'err'));
+    } else {
+      renderLocalFiles();
+    }
+  } else {
+    if (hasFSApi()) {
+      el('clientGoUp').style.display = '';
+      let handle = await getStoredDirectoryHandle();
+      if (!handle) {
+        handle = await pickClientDirectory();
+        if (!handle) { switchLocalMode('server'); return; }
+      }
+      state.fileClientDirHandle = handle;
+      state.fileClientDirName = handle.name;
+      state.fileClientHandleStack = [{ name: handle.name, handle }];
+      el('clientDirLabel').textContent = handle.name;
+      await loadClientDirectory(handle);
+    } else if (hasWebkitDirSupport()) {
+      el('clientGoUp').style.display = '';
+      const hint = isSecureCtx()
+        ? '点击"选择目录"浏览本机文件夹（当前浏览器不支持写入，仅可读取）'
+        : `点击"选择目录"浏览本机文件夹（仅可读取。如需写入请用 http://localhost:${location.port} 或 HTTPS 访问）`;
+      el('clientDirLabel').textContent = hint;
+      el('webkitDirPicker').click();
+    } else {
+      notify('此浏览器不支持 File System Access API 或 webkitdirectory。请使用 Chrome/Edge 等现代浏览器，并通过 localhost 或 HTTPS 访问本页面', 'err');
+      switchLocalMode('server');
+    }
+  }
+}
+
+async function pickClientDirectory() {
+  try {
+    const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    await storeDirectoryHandle(handle);
+    return handle;
+  } catch (e) {
+    if (e.name !== 'AbortError') notify('选择目录失败: ' + e.message, 'err');
+    return null;
+  }
+}
+
+async function loadClientDirectory(dirHandle) {
+  const entries = [];
+  for await (const [name, handle] of dirHandle.entries()) {
+    const entry = { name, handle };
+    if (handle.kind === 'directory') {
+      entry.type = 'folder';
+      entry.size = 0; entry.mtime = 0;
+    } else {
+      entry.type = 'file';
+      try { const f = await handle.getFile(); entry.size = f.size; entry.mtime = f.lastModified; }
+      catch { entry.size = 0; entry.mtime = 0; }
+    }
+    entries.push(entry);
+  }
+  entries.sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
+    return a.name.localeCompare(b.name, 'zh-CN');
+  });
+  state.fileClientEntries = entries;
+  state.fileClientSelected.clear();
+  renderClientFiles();
+}
+
+function handleWebkitDirSelection(evt) {
+  const files = Array.from(evt.target.files || []);
+  if (!files.length) { switchLocalMode('server'); return; }
+  const rootPath = files[0].webkitRelativePath || files[0].name;
+  const rootName = rootPath.split('/')[0] || '已选目录';
+  state.fileClientDirName = rootName;
+  state.fileClientDirHandle = null;
+  state.fileClientHandleStack = [];
+  state.fileClientWebkitPath = rootName;
+  el('clientGoUp').style.display = '';
+  el('clientDirLabel').textContent = rootName + ' (只读模式)';
+  // build flat entries with _fullPath; dedupe folders
+  const folderSet = new Set();
+  const entries = [];
+  files.forEach((f) => {
+    const relPath = f.webkitRelativePath || f.name;
+    const parts = relPath.split('/');
+    for (let i = 0; i < parts.length - 1; i++) {
+      const folderPath = parts.slice(0, i + 1).join('/');
+      if (!folderSet.has(folderPath)) {
+        folderSet.add(folderPath);
+        entries.push({ name: parts[i], type: 'folder', size: 0, mtime: 0, _fullPath: folderPath });
+      }
+    }
+    entries.push({
+      name: parts[parts.length - 1],
+      type: 'file',
+      size: f.size,
+      mtime: f.lastModified,
+      _fileObj: f,
+      _fullPath: relPath,
+    });
+  });
+  entries.sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
+    return a.name.localeCompare(b.name, 'zh-CN');
+  });
+  state.fileClientEntries = entries;
+  state.fileClientSelected.clear();
+  renderClientFiles();
+  evt.target.value = '';
+}
+
+function webkitDirParent(entryPath) {
+  const idx = entryPath.lastIndexOf('/');
+  return idx > 0 ? entryPath.slice(0, idx) : '';
+}
+
+function renderClientFiles() {
+  const box = el('localFileList');
+  box.innerHTML = '';
+  const isWebkitDir = !hasFSApi() && hasWebkitDirSupport();
+  let displayEntries = state.fileClientEntries;
+  if (isWebkitDir) {
+    const curPath = state.fileClientWebkitPath || '';
+    displayEntries = state.fileClientEntries.filter((e) => webkitDirParent(e._fullPath) === curPath);
+  }
+  displayEntries.forEach((entry) => {
+    const row = document.createElement('div');
+    const sel = state.fileClientSelected.has(entry.name);
+    row.className = `file-item${entry.type === 'folder' ? ' folder-item' : ''}${sel ? ' selected' : ''}`;
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'file-checkbox';
+    cb.checked = sel;
+    cb.onclick = (evt) => {
+      evt.stopPropagation();
+      if (state.fileClientSelected.has(entry.name)) {
+        state.fileClientSelected.delete(entry.name);
+        row.classList.remove('selected');
+        cb.checked = false;
+      } else {
+        state.fileClientSelected.add(entry.name);
+        row.classList.add('selected');
+        cb.checked = true;
+      }
+    };
+    row.onclick = (evt) => {
+      if (evt.target === cb) return;
+      if (entry.type === 'folder') {
+        if (isWebkitDir) {
+          state.fileClientWebkitPath = entry._fullPath || '';
+          state.fileClientSelected.clear();
+          el('clientDirLabel').textContent = state.fileClientWebkitPath + ' (只读模式)';
+          renderClientFiles();
+        } else {
+          navigateClientInto(entry).catch((e) => notify(e.message, 'err'));
+        }
+        return;
+      }
+      if (state.fileClientSelected.has(entry.name)) {
+        state.fileClientSelected.delete(entry.name);
+        row.classList.remove('selected');
+        cb.checked = false;
+      } else {
+        state.fileClientSelected.add(entry.name);
+        row.classList.add('selected');
+        cb.checked = true;
+      }
+    };
+    const icon = document.createElement('span');
+    icon.className = 'file-icon';
+    icon.textContent = entry.type === 'folder' ? '📁' : '📄';
+    const name = document.createElement('span');
+    name.className = 'file-name';
+    name.textContent = entry.name;
+    const size = document.createElement('span');
+    size.className = 'file-size';
+    size.textContent = entry.type === 'file' ? formatSize(entry.size) : '';
+    row.appendChild(cb);
+    row.appendChild(icon);
+    row.appendChild(name);
+    row.appendChild(size);
+    box.appendChild(row);
+  });
+  if (!displayEntries.length) {
+    const empty = document.createElement('div');
+    empty.className = 'help';
+    empty.style.cssText = 'padding:16px;text-align:center;color:#9ca3af;';
+    empty.textContent = isWebkitDir
+      ? '此目录为空（注意：只读模式无法检测空文件夹）'
+      : '此目录为空';
+    box.appendChild(empty);
+  }
+}
+
+async function navigateClientInto(entry) {
+  state.fileClientHandleStack.push({ name: entry.name, handle: entry.handle });
+  el('clientDirLabel').textContent = '/' + state.fileClientHandleStack.map((p) => p.name).join('/');
+  await loadClientDirectory(entry.handle);
+}
+
+async function navigateClientUp() {
+  const isWebkitDir = !hasFSApi() && hasWebkitDirSupport();
+  if (isWebkitDir) {
+    const cur = state.fileClientWebkitPath || '';
+    const parentPath = webkitDirParent(cur);
+    if (!parentPath) return;
+    state.fileClientWebkitPath = parentPath;
+    state.fileClientSelected.clear();
+    el('clientDirLabel').textContent = parentPath + ' (只读模式)';
+    renderClientFiles();
+    return;
+  }
+  if (state.fileClientHandleStack.length <= 1) return;
+  state.fileClientHandleStack.pop();
+  const top = state.fileClientHandleStack[state.fileClientHandleStack.length - 1];
+  el('clientDirLabel').textContent = '/' + state.fileClientHandleStack.map((p) => p.name).join('/');
+  await loadClientDirectory(top.handle);
+}
+
+// --- group file operations ---
+
+async function copyGroupFilesToLeft() {
+  if (!state.fileGroupSelected.size) return notify('请先在右侧选中文件', 'warn');
+  const isWebkitFallback = !hasFSApi() && hasWebkitDirSupport();
+  const useServerCopy = state.fileLocalMode === 'server' || isWebkitFallback;
+  if (state.fileLocalMode === 'client' && !isWebkitFallback && !state.fileClientDirHandle)
+    return notify('请先在左侧选择客户端目录', 'warn');
+  if (useServerCopy && !state.fileLocalPath) {
+    try { await loadLocalFiles(''); } catch { return notify('无法访问容器存储', 'err'); }
+  }
+
+  let copied = 0;
+  for (const fileId of state.fileGroupSelected) {
+    const entry = [...(state.fileGroupEntries.files || [])]
+      .find((e) => String(e.file_id || '') === fileId);
+    if (!entry) continue;
+    const fileName = String(entry.name || entry.file_name || fileId);
+
+    // server mode / webkitDir: use server-side copy (no browser middleman, handles large files)
+    if (useServerCopy) {
+      try {
+        const resp = await api('/backend/files/copy-to-local', 'POST', {
+          type: 'group',
+          id: state.fileGroupId,
+          file_id: String(entry.file_id || ''),
+          busid: String(entry.busid || ''),
+          name: fileName,
+          dirPath: state.fileLocalPath || '',
+        });
+        copied++;
+        // when in webkitDir fallback, also trigger browser download to user's ~/Downloads
+        if (isWebkitFallback && resp && resp.ok) {
+          const dlUrl = `/files/${encodeURIComponent(fileName)}`;
+          const a = document.createElement('a');
+          a.href = dlUrl;
+          a.download = fileName;
+          a.style.display = 'none';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        }
+      } catch (e) { notify(`失败 ${fileName}: ${e.message}`, 'err'); }
+      continue;
+    }
+
+    // FSA client mode: download through browser to write to local FS
+    const params = new URLSearchParams();
+    params.set('type', 'group');
+    params.set('id', state.fileGroupId);
+    params.set('file_id', String(entry.file_id || ''));
+    if (entry.busid) params.set('busid', String(entry.busid));
+    params.set('name', fileName);
+    const url = withAccessToken(`/backend/files/download?${params.toString()}`);
+
+    try {
+      let resp;
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 30000);
+        resp = await fetch(url, { signal: ctrl.signal });
+        clearTimeout(timer);
+      } catch (_first) {
+        const ctrl2 = new AbortController();
+        const timer2 = setTimeout(() => ctrl2.abort(), 30000);
+        resp = await fetch(url, { signal: ctrl2.signal });
+        clearTimeout(timer2);
+      }
+      if (!resp.ok) {
+        let detail = `HTTP ${resp.status}`;
+        try { const j = await resp.json(); if (j.error) detail = j.error; } catch {}
+        notify(`下载失败(${detail}): ${fileName}`, 'err'); continue;
+      }
+      const blob = await resp.blob();
+      const currentHandle = state.fileClientHandleStack.length > 0
+        ? state.fileClientHandleStack[state.fileClientHandleStack.length - 1].handle
+        : state.fileClientDirHandle;
+      const safeName = fileName.replace(/[\\/:*?"<>|]/g, '_');
+      const fileHandle = await currentHandle.getFileHandle(safeName, { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      copied++;
+    } catch (e) { notify(`失败 ${fileName}: ${e.message}`, 'err'); }
+  }
+  if (isWebkitFallback) {
+    switchLocalModeToServer();
+    await loadLocalFiles('');
+        notify(`已保存 ${copied} 个文件到容器存储并触发浏览器下载`, 'ok');
+  } else if (state.fileLocalMode === 'server') {
+    notify(`已复制 ${copied} 个文件到左侧`, 'ok');
+    await loadLocalFiles(state.fileLocalPath);
+  } else {
+    notify(`已复制 ${copied} 个文件到左侧`, 'ok');
+    const handle = state.fileClientHandleStack.length > 0
+      ? state.fileClientHandleStack[state.fileClientHandleStack.length - 1].handle
+      : state.fileClientDirHandle;
+    await loadClientDirectory(handle);
+  }
+}
+
+async function renameSelectedGroupFile() {
+  if (state.fileGroupSelected.size !== 1) return notify('请只选中一个文件/文件夹进行重命名', 'warn');
+  const fileId = [...state.fileGroupSelected][0];
+  const entry = [...(state.fileGroupEntries.files || []), ...(state.fileGroupEntries.folders || [])]
+    .find((e) => String(e.file_id || e.folder_id || '') === fileId);
+  if (!entry) return notify('找不到选中项', 'err');
+  const oldName = String(entry.name || entry.file_name || entry.folder_name || fileId);
+  const isFolder = !!(entry.folder_id || entry._type === 'folder');
+  const oldExt = isFolder ? '' : fileExtension(oldName);
+  const defaultName = isFolder ? oldName : nameWithoutExtension(oldName);
+  const newName = prompt('请输入新名称:', defaultName);
+  if (!newName || !newName.trim()) return;
+  let finalName = newName.trim();
+  if (!isFolder && oldExt && !finalName.endsWith(oldExt)) finalName += oldExt;
+  if (finalName === oldName) return;
+  const curDir = state.fileGroupPath.length ? '/' + state.fileGroupPath.map(p => p.id).join('/') : '/';
+  try {
+    await api('/backend/files/group/rename', 'POST', {
+      group_id: state.fileGroupId,
+      file_id: String(entry.file_id || entry.folder_id || ''),
+      current_parent_directory: curDir,
+      new_name: finalName,
+    });
+    notify('重命名成功', 'ok');
+  } catch (e) {
+    notify(e.message || '重命名失败，NapCat 可能不支持此操作', 'err');
+  }
+  const folderId = state.fileGroupPath.length ? state.fileGroupPath[state.fileGroupPath.length - 1].id : '';
+  loadGroupFiles(state.fileGroupId, folderId).catch(() => {});
+}
+
+async function moveSelectedGroupFiles() {
+  if (!state.fileGroupSelected.size) return notify('请先选中要移动的文件/文件夹', 'warn');
+  const folders = (state.fileGroupEntries.folders || []).map(f => ({
+    id: String(f.folder_id || ''),
+    name: String(f.folder_name || f.folder_id || '')
+  }));
+  const folderListStr = folders.length ? folders.map(f => `${f.name} (ID: ${f.id})`).join('\n') : '(无子文件夹)';
+  const targetInput = prompt(`当前目录下的文件夹:\n${folderListStr}\n\n请输入目标文件夹 名称 或 ID（留空=根目录）:`, '');
+  if (targetInput === null) return;
+  const input = targetInput.trim();
+  const curDir = state.fileGroupPath.length ? '/' + state.fileGroupPath.map(p => p.id).join('/') : '/';
+  let targetDir = '/';
+  if (input) {
+    // 1) exact ID match (with or without leading /)
+    const exactById = folders.find(f => f.id === input || '/' + f.id === input);
+    if (exactById) {
+      targetDir = '/' + exactById.id;
+    } else {
+      // 2) case-insensitive name match
+      const lower = input.toLowerCase();
+      const byName = folders.find(f => String(f.name || '').toLowerCase() === lower);
+      if (byName) {
+        targetDir = '/' + byName.id;
+      } else {
+        // 3) fallback: treat as raw path
+        targetDir = input.startsWith('/') ? input : '/' + input;
+      }
+    }
+  }
+  let moved = 0;
+  for (const fileId of state.fileGroupSelected) {
+    const entry = [...(state.fileGroupEntries.files || []), ...(state.fileGroupEntries.folders || [])]
+      .find((e) => String(e.file_id || e.folder_id || '') === fileId);
+    if (!entry) continue;
+    try {
+      await api('/backend/files/group/move', 'POST', {
+        group_id: state.fileGroupId,
+        file_id: String(entry.file_id || entry.folder_id || ''),
+        current_parent_directory: curDir,
+        target_parent_directory: targetDir,
+      });
+      moved++;
+    } catch (e) { notify(`移动失败: ${e.message}`, 'err'); }
+  }
+  notify(`已移动 ${moved} 个项目`, 'ok');
+  const curFolderId = state.fileGroupPath.length ? state.fileGroupPath[state.fileGroupPath.length - 1].id : '';
+  loadGroupFiles(state.fileGroupId, curFolderId).catch(() => {});
+}
+
+// --- upload to group: client mode support ---
+
+const _uploadLocalToGroupOrig = uploadLocalToGroup;
+uploadLocalToGroup = async function () {
+  if (!state.fileGroupId) return notify('请先选择目标群聊', 'warn');
+  if (state.fileLocalMode === 'client') {
+    if (!state.fileClientSelected.size) return notify('请先在左侧选中要上传的文件', 'warn');
+    for (const cname of state.fileClientSelected) {
+      const entry = state.fileClientEntries.find((e) => e.name === cname);
+      if (!entry || entry.type === 'folder') continue;
+      try {
+        const file = entry._fileObj || await entry.handle.getFile();
+        const uploadRes = await uploadLocalFile(file, 'file');
+        const url = String(uploadRes.url || uploadRes.relativeUrl || '');
+        await api('/backend/messages/send', 'POST', {
+          type: 'group', id: state.fileGroupId,
+          segments: [{ type: 'file', data: { file: url, name: entry.name } }],
+        });
+        notify(`已上传: ${entry.name}`, 'ok');
+      } catch (e) { notify(`上传失败 ${entry.name}: ${e.message}`, 'err'); }
+    }
+    state.fileClientSelected.clear();
+    const handle = state.fileClientHandleStack.length > 0
+      ? state.fileClientHandleStack[state.fileClientHandleStack.length - 1].handle
+      : state.fileClientDirHandle;
+    if (handle) await loadClientDirectory(handle);
+    const folderId = state.fileGroupPath.length ? state.fileGroupPath[state.fileGroupPath.length - 1].id : '';
+    loadGroupFiles(state.fileGroupId, folderId).catch(() => {});
+    return;
+  }
+  return _uploadLocalToGroupOrig();
+};
+
 function refreshFileGroupSelect() {
   const sel = el('fileGroupSelect');
   // only show whitelisted groups
@@ -1678,6 +2471,22 @@ function bindEvents() {
     }
   };
 
+  el('changePasswordBtn').onclick = () => runAction('changePasswordBtn', async () => {
+    const p1 = el('newPasswordInput').value.trim();
+    const p2 = el('confirmPasswordInput').value.trim();
+    if (!p1 || p1.length < 4) { el('changePasswordTip').textContent = '密码至少需要4位字符'; return; }
+    if (p1 !== p2) { el('changePasswordTip').textContent = '两次输入的密码不一致'; return; }
+    await api('/backend/access-token', 'POST', { token: p1 });
+    setClientToken(p1);
+    state.accessToken = p1;
+    el('accessToken').value = p1;
+    hideChangePasswordModal();
+    notify('密码已更新，请牢记新密码', 'ok');
+  }, '设置中...');
+  el('confirmPasswordInput').onkeydown = (evt) => {
+    if (evt.key === 'Enter') { evt.preventDefault(); el('changePasswordBtn').click(); }
+  };
+
   el('saveToken').onclick = () => runAction('saveToken', async () => {
     const token = el('wsToken').value.trim();
     await api('/backend/ws-token', 'POST', { token });
@@ -1717,9 +2526,41 @@ function bindEvents() {
   el('localRefreshBtn').onclick = () => loadLocalFiles(state.fileLocalPath).catch((e) => notify(e.message, 'err'));
   el('localUploadToGroup').onclick = () => runAction('localUploadToGroup', () => uploadLocalToGroup(), '上传中...');
   el('localMkdir').onclick = () => createLocalFolder();
+  el('localSetBg').onclick = () => runAction('localSetBg', () => setLocalFileAsBackground(), '设置中...');
+  el('localRename').onclick = () => runAction('localRename', () => renameSelectedLocalFile(), '重命名中...');
   el('localPathInput').onkeydown = (evt) => {
     if (evt.key === 'Enter') el('localGoBtn').click();
   };
+
+  // left panel mode toggle
+  el('localModeServer').onclick = () => switchLocalMode('server');
+  el('localModeClient').onclick = () => switchLocalMode('client');
+  // client nav bindings
+  el('clientGoUp').onclick = () => navigateClientUp();
+  el('clientPickDir').onclick = async () => {
+    if (!hasFSApi() && hasWebkitDirSupport()) {
+      el('webkitDirPicker').click();
+      return;
+    }
+    const handle = await pickClientDirectory();
+    if (!handle) return;
+    state.fileClientDirHandle = handle;
+    state.fileClientDirName = handle.name;
+    state.fileClientHandleStack = [{ name: handle.name, handle }];
+    el('clientDirLabel').textContent = handle.name;
+    await loadClientDirectory(handle);
+  };
+  el('clientRefreshBtn').onclick = async () => {
+    if (!hasFSApi() && hasWebkitDirSupport()) {
+      el('webkitDirPicker').click();
+      return;
+    }
+    const handle = state.fileClientHandleStack.length > 0
+      ? state.fileClientHandleStack[state.fileClientHandleStack.length - 1].handle
+      : state.fileClientDirHandle;
+    if (handle) await loadClientDirectory(handle);
+  };
+  el('webkitDirPicker').onchange = (evt) => handleWebkitDirSelection(evt);
 
   el('fileGroupSelect').onchange = () => {
     state.fileGroupId = el('fileGroupSelect').value;
@@ -1739,7 +2580,10 @@ function bindEvents() {
   };
   el('groupGoUp').onclick = () => navigateGroupUp();
   el('groupDownloadSelected').onclick = () => runAction('groupDownloadSelected', () => downloadSelectedGroupFiles(), '下载中...');
+  el('groupCopyToLeft').onclick = () => runAction('groupCopyToLeft', () => copyGroupFilesToLeft(), '复制中...');
   el('groupDeleteSelected').onclick = () => runAction('groupDeleteSelected', () => deleteSelectedGroupFiles(), '删除中...');
+  el('groupRename').onclick = () => runAction('groupRename', () => renameSelectedGroupFile(), '重命名中...');
+  el('groupMove').onclick = () => runAction('groupMove', () => moveSelectedGroupFiles(), '移动中...');
   el('groupMkdir').onclick = () => {
     if (!state.fileGroupId) return notify('请先选择群聊', 'warn');
     createGroupFolder();
@@ -1747,6 +2591,12 @@ function bindEvents() {
 
   el('pullHistory').onclick = () => runAction('pullHistory', () => pullHistory({ append: true }), '拉取中...');
   el('sendMsg').onclick = () => runAction('sendMsg', () => sendMessage(), '发送中...');
+  el('textMsg').onkeydown = (evt) => {
+    if (evt.key === 'Enter' && (evt.ctrlKey || evt.metaKey)) {
+      evt.preventDefault();
+      el('sendMsg').click();
+    }
+  };
   el('toggleRealtime').onclick = () => runAction('toggleRealtime', () => toggleRealtimeForActive(), '处理中...');
   el('manageConv').onclick = () => openConvManageModal();
   el('pickImage').onclick = () => runAction('pickImage', () => pickAndUploadImage(), '选择中...');
@@ -1779,14 +2629,10 @@ function bindEvents() {
       searchInManageConversations();
     }
   };
-  el('saveBgImage').onclick = () => {
-    runAction('saveBgImage', async () => {
+  // settings: live preview + unified save
+  el('bgImageUrl').oninput = () => {
     state.custom.bgImageUrl = el('bgImageUrl').value.trim();
-    await saveCustomSettings();
     applyCustomStyles();
-    renderMessages();
-    notify('背景已应用', 'ok');
-    }, '应用中...');
   };
   el('pickBgImage').onclick = () => {
     const picker = el('bgImagePicker');
@@ -1802,52 +2648,35 @@ function bindEvents() {
       const url = String(res.url || res.relativeUrl || '').trim();
       el('bgImageUrl').value = url;
       state.custom.bgImageUrl = url;
-      await saveCustomSettings();
       applyCustomStyles();
-      notify('已选取本机背景图', 'ok');
+      notify('已选取本机背景图，点击"保存设置"持久化', 'ok');
     })().catch((e) => notify(e.message || '背景图上传失败', 'err'));
   };
-  el('selfMsgColorPicker').oninput = () => {
-    state.custom.selfMsgColor = el('selfMsgColorPicker').value || '#dbeafe';
-    syncSelfColorPreview();
+  el('bgOpacity').oninput = () => {
+    state.custom.bgOpacity = Number(el('bgOpacity').value) || 20;
+    el('bgOpacityLabel').textContent = `${state.custom.bgOpacity}%`;
+    applyCustomStyles();
   };
-  el('saveSelfColor').onclick = () => {
-    runAction('saveSelfColor', async () => {
-    state.custom.selfMsgColor = el('selfMsgColorPicker').value || state.custom.selfMsgColor || '#dbeafe';
-    await saveCustomSettings();
+  el('bgPosX').oninput = () => {
+    state.custom.bgPosX = Number(el('bgPosX').value) || 50;
+    el('bgPosXLabel').textContent = `${state.custom.bgPosX}%`;
+    applyCustomStyles();
+  };
+  el('bgPosY').oninput = () => {
+    state.custom.bgPosY = Number(el('bgPosY').value) || 50;
+    el('bgPosYLabel').textContent = `${state.custom.bgPosY}%`;
+    applyCustomStyles();
+  };
+  el('selfMsgColorPicker').oninput = () => {
+    state.custom.selfMsgColor = el('selfMsgColorPicker').value || '#ffe4a8';
     syncSelfColorPreview();
     renderMessages();
-    notify('我的消息背景色已应用', 'ok');
-    }, '应用中...');
   };
-  // background opacity
-  el('bgOpacity').oninput = () => {
-    el('bgOpacityLabel').textContent = `${el('bgOpacity').value}%`;
-  };
-  el('saveBgOpacity').onclick = () => {
-    runAction('saveBgOpacity', async () => {
-    state.custom.bgOpacity = Number(el('bgOpacity').value) || 20;
-    await saveCustomSettings();
-    applyCustomStyles();
-    notify('背景透明度已应用', 'ok');
-    }, '应用中...');
-  };
-  // background position X
-  el('bgPosX').oninput = () => {
-    el('bgPosXLabel').textContent = `${el('bgPosX').value}%`;
-  };
-  // background position Y
-  el('bgPosY').oninput = () => {
-    el('bgPosYLabel').textContent = `${el('bgPosY').value}%`;
-  };
-  el('saveBgPosition').onclick = () => {
-    runAction('saveBgPosition', async () => {
-    state.custom.bgPosX = Number(el('bgPosX').value) || 50;
-    state.custom.bgPosY = Number(el('bgPosY').value) || 50;
-    await saveCustomSettings();
-    applyCustomStyles();
-    notify('背景位置已应用', 'ok');
-    }, '应用中...');
+  el('saveAllSettings').onclick = () => {
+    runAction('saveAllSettings', async () => {
+      await saveCustomSettings();
+      notify('设置已保存', 'ok');
+    }, '保存中...');
   };
   el('refreshLogs').onclick = () => runAction('refreshLogs', async () => {
     await refreshAuditLogsData();

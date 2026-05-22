@@ -17,6 +17,7 @@ RUN npm ci --omit=dev
 
 # 复制源码和静态文件
 COPY server.js ./
+COPY server/ ./server/
 COPY public/ ./public/
 
 EXPOSE 18080

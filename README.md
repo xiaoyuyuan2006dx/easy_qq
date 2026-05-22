@@ -1,67 +1,54 @@
-# easy\_qq（NapCat 反向 WS 接入）
+# easy_qq — NapCat 反向 WebSocket 管理面板
 
-`easy_qq` 是一个 OneBot11 反向 WebSocket 服务端：
-- NapCat 主动连到本服务的 `/ws`
-- 浏览器打开本服务页面进行会话管理、收发消息、日志查看
->[!note]
->需要先部署NapCat，https://napneko.github.io/
+Web 端管理 QQ 机器人：收发消息、群文件管理、多端同步、访问控制。
+
+NapCat（OneBot11）主动连接 `/ws`，浏览器打开面板进行操作。
+
+> 需要先部署 [NapCat](https://napneko.github.io/)
+
 ---
 
-## 1. 环境与启动
+## 1. 快速开始
 
-### 1.1 安装依赖
+### 1.1 Node.js 直接启动
 
 ```bash
-cd /Users/你的用户名/easy_qq
+git clone <repo> && cd easy_qq
 npm install
-```
-
-### 1.2 启动服务
-
-```bash
 npm start
 ```
 
-启动后：
-- 页面地址：`http://127.0.0.1:18080`
-- NapCat 反向 WS 地址：`ws://<你的IP>:18080/ws?access_token=<你的ws_token>`
+- 面板地址：`http://127.0.0.1:18080`
+- NapCat 反向 WS：`ws://<你的IP>:18080/ws?access_token=<你的ws_token>`
 
-> 页面会显示自动识别到的本机 IP，可直接复制给 NapCat 使用。
-
-### 1.3 Docker 部署
+### 1.2 Docker 部署（推荐）
 
 ```bash
-docker build -t easy_qq .
-docker run -d --name easy_qq -p 18080:18080 -v easy_qq_data:/app/data easy_qq
+docker run -d \
+  --name easyqq \
+  -p 18080:18080 \
+  -v ./easyqq/data:/app/data \
+  tarodeluxe2006/easy_qq:latest
 ```
 
-构建时可指定 npm 代理：
+或使用 docker-compose：
 
-```bash
-docker build --build-arg NPM_PROXY=http://host.docker.internal:7897 -t easy_qq .
+```yaml
+easyqq:
+  image: tarodeluxe2006/easy_qq:latest
+  container_name: easyqq
+  restart: always
+  ports:
+    - 18080:18080
+  volumes:
+    - ./easyqq/data:/app/data
 ```
 
 ---
 
-## 2. 两种 token 的区别（非常重要）
+## 2. NapCat 配置
 
-`easy_qq` 里有两个不同用途的 token：
-
-1. **ws\_token（给 NapCat 反向 WS 用）**
-   2. 用在 NapCat 的 websocket client 连接参数里
-   3. 用于校验 NapCat 到 `/ws` 的连接
-   4. 形如：`ws://IP:18080/ws?access_token=你的ws_token`
-
-2. **访问 token（给浏览器页面用）**
-   2. 用于网页端登录校验（不是 NapCat WS 校验）
-   3. 非 `127.0.0.1` / 非本机 IP 访问时需要输入
-   4. 仅本机访问可管理/修改该 token
-
----
-
-## 3. NapCat 配置（反向 WS）
-
-在 NapCat 的 `onebot11_<qq号>.json` 中配置 `websocketClients`（或对应客户端项）：
+NapCat 的 `onebot11_<QQ号>.json` 中配置 websocketClients：
 
 ```json
 {
@@ -77,114 +64,149 @@ docker build --build-arg NPM_PROXY=http://host.docker.internal:7897 -t easy_qq .
 }
 ```
 
-建议：
-- `messagePostFormat` 使用 `array`
-- 若你已经把 `ws_token` 放到 `url` 查询参数，`token` 字段可留空（避免双重不一致）
-- `url` 不要写 `localhost`（NapCat 不在同一网络命名空间时会失败）
-
-配置完后重启 NapCat，或者查看日志中有相关信息说明成功开启服务。
+- `token` 字段留空即可（token 已包含在 URL 参数中）
+- `messagePostFormat` 建议 `array`
+- `url` 不要用 `localhost`（容器网络下不可达）
 
 ---
 
-## 4. 连接自检流程（推荐按顺序）
+## 3. 鉴权体系
 
-1. 启动 `easy_qq`：`npm start`
-2. 浏览器打开：`http://127.0.0.1:18080`
-3. 在页面确认：
-   4. 自动识别本机 IP
-   5. NapCat ws 客户端地址提示正确
-4. 启动/重启 NapCat
-5. 在页面日志中确认已出现 WS 连接成功、消息事件
+### 3.1 两种 Token
+
+| 用途 | 说明 |
+|------|------|
+| **ws_token** | NapCat 连接 `/ws` 时使用，在设备管理页设置 |
+| **访问密码** | 网页登录验证，默认 `easyqq`，首次登录强制修改 |
+
+### 3.2 登录规则
+
+- 默认密码 `easyqq`，登录后弹出改密窗口，必须设置新密码
+- 连续 3 次输错显示找回指引（SSH 编辑 `data/store.json` 将 `accessToken` 改为 `easyqq`）
+- `127.0.0.1` 本机访问免密校验
 
 ---
 
-## 5. 多端登录（同一服务）
+## 4. 功能详解
 
-目标：手机/另一台电脑也能打开同一个 `easy_qq` 页面。
-> [!note]
-> 手机的访问页面仅保留少量功能
+### 4.1 消息控制台
 
-### 5.1 访问地址
+- **会话管理**：搜索好友/群、勾选显示，左侧栏只展示选中的会话
+- **消息窗口**：选择会话后拉取历史消息（可指定数量），支持实时推送开关
+- **发送消息**：文本、图片、文件，支持 @提及、回复指定消息、Ctrl+Enter 快捷发送
+- **白名单**：只接收白名单会话的推送，过滤无关消息
 
-局域网设备使用：
+### 4.2 文件管理
 
-```text
-http://<服务机器局域网IP>:18080
+双栏布局，左侧为本机文件，右侧为群文件。
+
+**左侧 — 本机文件** 两种模式：
+- **容器存储**：浏览/管理服务器 `data/local_files/` 目录
+- **本机电脑**：通过 File System Access API（需 HTTPS 或 localhost）直接读写本地文件夹；未满足安全上下文时使用 webkitdirectory 只读模式
+
+**右侧 — 群文件**：
+- 选择群聊，浏览群文件目录（支持子文件夹）
+- 下载选中文件到本机
+- 复制并移动到左侧（服务端直传，不经过浏览器，大文件无忧）
+- 上传本地文件到群
+- 删除、重命名、移动群文件（需群主/管理员权限）
+
+### 4.3 设备管理
+
+- 设置/修改 ws_token（NapCat 连接用）
+- 设置/修改访问密码
+- 设备监控：记录最近访问设备的 IP、User-Agent、最后访问时间
+
+### 4.4 个性化设置
+
+- **背景图片**：URL 或本地上传，支持透明度和位置调节
+- **消息气泡**：自己气泡颜色自定义，他人气泡配色从 12 组预设中选
+- 实时预览，统一保存
+
+### 4.5 日志
+
+- 按级别过滤（debug/info/warn/error/system）
+- 导出为文本文件
+
+---
+
+## 5. 反向代理 & HTTPS（获取 FSA 完整写入能力）
+
+浏览器 File System Access API 需要安全上下文（HTTPS 或 localhost）。推荐用 Caddy 反代：
+
+```caddy
+easyqq.example.com {
+    reverse_proxy easyqq:18080
+}
 ```
 
-例如：`http://192.168.1.100:3001`
+Caddy 自动申请 Let's Encrypt 证书。内网环境用 `tls internal` 自签证书：
 
-### 5.2 登录规则
+```caddy
+easyqq.tarobot:443 {
+    tls internal
+    reverse_proxy easyqq:18080
+}
+```
 
-- 地址里带 `?access_token=xxx`：页面会自动尝试校验
-- 地址里不带 token：进入后手动输入
-- `127.0.0.1` 访问默认不强制校验
-
-### 5.3 多端一致性
-
-- 会话、消息、配置保存在服务端（`data/store.json`）
-- 不同设备登录同一个服务地址，看到的是同一份数据
+无需在 easy_qq 侧做任何 HTTPS 配置。
 
 ---
 
-## 6. 常见网络拓扑与配置建议
+## 6. 网络拓扑
 
-### 场景 A：NapCat 和 easy\_qq 在同一台机器
+### 场景 A：全部同一台机器
 
-- NapCat `url` 直接填：`ws://<本机IP>:18080/ws?access_token=<ws_token>`
-- 浏览器本机访问：`http://127.0.0.1:18080`
+- easy_qq 监听 `0.0.0.0:18080`
+- NapCat `url` 填 `ws://127.0.0.1:18080/ws?access_token=xxx`
+- 浏览器访问 `http://127.0.0.1:18080`（FSA 可用）
 
-### 场景 B：NapCat 在 Windows（含 Docker），easy\_qq 在 WSL
+### 场景 B：NapCat 和 easy_qq 分离
 
-常见可行方案：
+- NapCat 所在机器需能访问 easy_qq 的 IP:18080
+- 注意防火墙和端口转发
 
-1. 在 WSL 启动 easy\_qq（监听 `0.0.0.0:18080`）
-2. Windows 做 `18080` 端口转发到 WSL `18080`
-3. Windows 防火墙放行 `18080`
-4. NapCat（Docker）用 `host.docker.internal:18080` 或 Windows 局域网地址访问
+### 场景 C：手机/其他设备访问
 
-> 若网页能在另一台设备打开，但 NapCat 连不上，优先排查端口转发与防火墙。
-
----
-
-## 7. 功能说明
-
-- 会话管理（手动选择显示哪些私聊/群聊）
-- 手动拉取消息、自动推送消息
-- 发送文本、图片、文件
-- 日志查看与导出
-- 个性化设置（背景、自己的消息气泡颜色）
-- 移动端简化页面（会话切换 + 最近消息 + 文本/文件发送）
+- 局域网内访问 `http://<IP>:18080` 或反代域名
+- 手机端界面自动简化
 
 ---
 
-## 8. 常见问题排查
+## 7. 数据目录
 
-### 8.1 浏览器 401
+```
+data/
+├── store.json       # 持久化状态（token、会话、设置）
+├── uploads/         # 上传文件（群文件转发缓存）
+├── exports/         # 日志导出
+└── local_files/     # 容器本地文件存储
+    └── default.png  # 默认背景图片（可替换）
+```
 
-- 先确认访问 token 是否正确
-- 本机访问优先用 `127.0.0.1:18080`
-- 局域网访问要用服务机器真实 IP
-
-### 8.2 NapCat 连不上 WS
-
-- `url` 是否为：`ws://IP:18080/ws?access_token=ws_token`
-- `token`项可以不填写 
-- 服务是否已启动且监听正常
-- 防火墙/端口转发是否放行
-
-### 8.3 两台设备页面显示不一致
-
-- 是否连接到同一个 `easy_qq` 服务地址
-- 是否命中不同浏览器缓存（可强制刷新）
-- 是否误连到不同机器/不同端口
+Docker 部署时将 `data/` 挂载为卷以持久化数据。
 
 ---
 
-## 9. 数据与目录
+## 8. 故障排查
 
-- 前端静态资源：`public/`
-- 服务端入口：`server.js`
-- 持久化数据：`data/store.json`
+### 浏览器 401
+- 确认访问密码正确，默认 `easyqq`
+- 本机访问用 `127.0.0.1:18080`
 
+### NapCat 连不上 WS
+- `url` 格式：`ws://IP:18080/ws?access_token=ws_token`
+- ws_token 是否一致（设备管理页可查看/修改）
+- 防火墙是否放行 18080
 
+### 文件复制失败
+- `Load failed`：QQ 文件链接失效，重试或刷新群文件列表后重试
+- 大文件建议用容器存储模式（服务端直传，不经过浏览器）
+
+### FSA / 本机目录写入不可用
+- 确认使用 `localhost` 或 HTTPS 访问
+- Safari 不支持 FSA，仅可读取目录
+
+### 忘记密码
+- SSH 登录服务器：编辑 `data/store.json`，将 `accessToken` 改为 `"easyqq"`
+- 重启服务后使用默认密码登录并设置新密码
