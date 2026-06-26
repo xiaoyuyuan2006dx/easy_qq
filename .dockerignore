@@ -1,0 +1,12 @@
+node_modules/
+data/
+.git/
+.gitignore
+.DS_Store
+Dockerfile
+.dockerignore
+README.md
+.claude/
+.mcp.json
+*.log
+*.pem

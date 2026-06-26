@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>easy_qq - NapCat Reverse WS</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div id="bgLayer" class="bg-layer"></div>
+  <header>
+    <span>easy_qq（NapCat反向WS）<span id="connBadge" class="badge">启动中</span></span>
+    <div id="selfInfo" class="self-info">
+      <img id="selfAvatar" class="self-avatar" alt="avatar" />
+      <span id="selfQq">QQ: -</span>
+      <span id="versionStamp" class="version-stamp">-</span>
+    </div>
+    <a id="repoLink" href="#" target="_blank" rel="noopener noreferrer" class="repo-link" title="Repository">
+      <span class="ui-icon ui-icon-github"></span>
+    </a>
+  </header>
+  <div id="mobileDesktopTip" class="mobile-tip">完整功能请在电脑浏览器打开</div>
+  <div class="tabs">
+    <button id="tabConsole" class="tab-btn active">消息控制台</button>
+    <button id="tabFiles" class="tab-btn">文件管理</button>
+    <button id="tabDevices" class="tab-btn">设备管理</button>
+    <button id="tabSettings" class="tab-btn">个性化设置</button>
+    <button id="tabLogs" class="tab-btn">日志</button>
+  </div>
+
+  <div id="pageConsole" class="page active">
+    <div class="main">
+      <div class="panel">
+        <div class="section-title">反向WS状态</div>
+        <div class="row"><button id="refreshHealth" class="secondary">刷新连接状态</button></div>
+        <div class="help" id="wsTip"></div>
+        <div class="help" id="wsTipIp"></div>
+        <div class="help" id="visitIp"></div>
+
+        <div class="section-title">会话管理</div>
+        <div class="row">
+          <button id="refreshList">刷新列表</button>
+          <button id="manageConv" class="secondary">管理会话</button>
+        </div>
+        <div class="row">
+          <select id="searchType"><option value="private">搜好友</option><option value="group">搜群</option></select>
+          <input id="searchKeyword" placeholder="输入ID或名称关键词" />
+        </div>
+        <div class="row"><button id="doSearch">搜索</button></div>
+        <div id="convList" class="list"></div>
+
+        <div class="section-title">白名单推送</div>
+        <div class="row">
+          <button id="clearWl" class="secondary">清空白名单</button>
+        </div>
+      </div>
+
+      <div class="panel chat-panel">
+        <div class="section-title">消息窗口</div>
+        <div class="chat-layout">
+          <div class="row msg-toolbar">
+            <select id="mobileConvSelect" class="mobile-only"></select>
+            <input id="activeConv" placeholder="当前会话：group:123 或 private:456" />
+            <input id="historyCount" type="number" min="1" max="200" value="30" />
+            <button id="pullHistory">手动拉取</button>
+            <button id="toggleRealtime" class="secondary">实时推送: 关闭</button>
+          </div>
+          <div id="msgArea" class="msg-area"></div>
+          <div class="composer">
+            <div class="section-title">发送消息</div>
+            <div class="row media-row">
+              <input id="atRef" placeholder="@QQ号（可空，仅群聊生效）" />
+              <input id="replyRef" placeholder="回复消息ID（可空）" />
+              <button id="pickImage" type="button" class="icon-btn" title="选择图片" aria-label="选择图片"><span class="ui-icon ui-icon-image"></span></button>
+              <button id="pickFile" type="button" class="icon-btn" title="选择文件" aria-label="选择文件"><span class="ui-icon ui-icon-file"></span></button>
+              <input id="selectedMediaInfo" placeholder="未选择文件" readonly />
+            </div>
+            <div class="row text-send-row">
+              <div class="text-send-wrap">
+                <textarea id="textMsg" placeholder="文本内容（可空，Ctrl+Enter 发送）"></textarea>
+                <div class="send-btn-group">
+                  <button id="sendMsg">发送到当前会话</button>
+                  <span class="shortcut-hint">Ctrl+Enter</span>
+                </div>
+              </div>
+            </div>
+            <input id="imagePicker" type="file" accept="image/*" hidden />
+            <input id="filePicker" type="file" hidden />
+            <input id="webkitDirPicker" type="file" webkitdirectory hidden />
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="pageFiles" class="page">
+    <div class="main file-main">
+      <div class="panel file-panel">
+        <div class="section-title">本机文件</div>
+        <div class="row file-mode-row">
+          <button id="localModeServer" class="mode-btn active">容器存储</button>
+          <button id="localModeClient" class="mode-btn">本机电脑</button>
+        </div>
+        <div id="localNavServer" class="row file-nav-row">
+          <button id="localGoUp" class="secondary" title="上级目录">← 上级</button>
+          <input id="localPathInput" placeholder="当前路径" />
+          <button id="localGoBtn">跳转</button>
+          <button id="localRefreshBtn" class="secondary">刷新</button>
+        </div>
+        <div id="localNavClient" class="row file-nav-row" style="display:none">
+          <button id="clientGoUp" class="secondary" title="上级目录">← 上级</button>
+          <span id="clientDirLabel" class="help">未选择目录</span>
+          <button id="clientPickDir" class="secondary">选择目录</button>
+          <button id="clientRefreshBtn" class="secondary">刷新</button>
+        </div>
+        <div class="file-list" id="localFileList"></div>
+        <div class="row file-actions">
+          <button id="localUploadToGroup" class="success">上传选中到群</button>
+          <button id="localMkdir" class="secondary">新建文件夹</button>
+          <button id="localSetBg" class="secondary">设为背景</button>
+          <button id="localRename" class="secondary">重命名</button>
+        </div>
+      </div>
+      <div class="panel file-panel">
+        <div class="section-title">群文件</div>
+        <div class="row">
+          <select id="fileGroupSelect"><option value="">-- 选择群聊 --</option></select>
+          <button id="refreshGroupFiles">刷新</button>
+        </div>
+        <div class="row file-nav-row">
+          <button id="groupGoUp" class="secondary" title="上级目录">← 上级</button>
+          <span id="groupFolderLabel" class="help">根目录</span>
+        </div>
+        <div class="file-list" id="groupFileList"></div>
+        <div class="help" style="margin:4px 0;color:#6b7280;font-size:11px;">移动/重命名/删除仅群主/管理员有权限；上传者信息来自 NapCat 接口，若无显示则为接口未返回</div>
+        <div class="row file-actions">
+          <button id="groupDownloadSelected">下载选中</button>
+          <button id="groupCopyToLeft" class="success">复制并移动到左侧</button>
+          <button id="groupDeleteSelected" class="secondary">删除选中</button>
+          <button id="groupRename" class="secondary">重命名</button>
+          <button id="groupMove" class="secondary">移动</button>
+          <button id="groupMkdir" class="secondary">新建文件夹</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="pageDevices" class="page">
+    <div class="main device-main">
+      <div class="panel">
+        <div class="section-title">访问设置</div>
+        <div class="help">设置访问密码。任何人知道此密码即可通过网页管理NapCat。首次使用默认密码为 <code>easyqq</code>。</div>
+        <div class="row"><input id="wsToken" placeholder="NapCat websocketClients token" /></div>
+        <div class="row"><button id="saveToken">保存反向WS Token</button></div>
+        <div id="accessTokenRow" class="row"><input id="accessToken" placeholder="访问密码（至少4位）" /></div>
+        <div id="accessTokenActionRow" class="row">
+          <button id="saveAccessToken">保存访问Token</button>
+          <button id="refreshDevices" class="secondary">刷新设备状态</button>
+        </div>
+        <div id="accessTokenHint" class="help"></div>
+      </div>
+
+      <div class="panel">
+        <div class="section-title">访问设备监控</div>
+        <div class="help">记录最近访问设备IP、请求地址、User-Agent、最后访问时间。</div>
+        <div id="deviceList" class="list device-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="pageSettings" class="page">
+    <div class="main settings-main">
+      <div class="panel settings-panel">
+        <div class="section-title">个性化设置</div>
+        <div class="help">修改后实时预览，点击底部"保存设置"持久化到服务器。</div>
+
+        <div class="settings-group">
+          <div class="settings-group-title">背景图片</div>
+          <div class="row">
+            <input id="bgImageUrl" placeholder="背景图 URL，例如 https://example.com/bg.jpg 或 /files/xxx.png" />
+            <button id="pickBgImage" class="secondary" type="button">选择本机图</button>
+          </div>
+          <input id="bgImagePicker" type="file" accept="image/*" hidden />
+        </div>
+
+        <div class="settings-group">
+          <div class="settings-group-title">背景显示</div>
+          <div class="settings-inline-row">
+            <label>透明度 <span id="bgOpacityLabel" class="slider-label">20%</span></label>
+            <input id="bgOpacity" type="range" min="5" max="100" value="20" />
+          </div>
+          <div class="settings-inline-row">
+            <label>水平 <span id="bgPosXLabel" class="slider-label">50%</span></label>
+            <input id="bgPosX" type="range" min="0" max="100" value="50" />
+          </div>
+          <div class="settings-inline-row">
+            <label>垂直 <span id="bgPosYLabel" class="slider-label">50%</span></label>
+            <input id="bgPosY" type="range" min="0" max="100" value="50" />
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <div class="settings-group-title">消息气泡配色</div>
+          <div class="settings-inline-row bubble-color-row">
+            <label>我的气泡</label>
+            <input id="selfMsgColorCode" readonly />
+            <input id="selfMsgColorPicker" type="color" class="color-preview color-input" title="点击选取颜色" />
+            <span class="bubble-sep">|</span>
+            <label class="others-label">他人配色</label>
+            <div class="color-preset-row" id="colorPresets"></div>
+          </div>
+        </div>
+
+        <div class="row settings-save-row">
+          <button id="saveAllSettings">保存设置</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="pageLogs" class="page">
+    <div class="main logs-main">
+      <div class="panel logs-panel">
+        <div class="row logs-toolbar">
+          <label><input id="logDebug" type="checkbox" checked /> debug</label>
+          <label><input id="logInfo" type="checkbox" checked /> info</label>
+          <label><input id="logWarn" type="checkbox" checked /> warn</label>
+          <label><input id="logError" type="checkbox" checked /> error</label>
+          <label><input id="logSystem" type="checkbox" checked /> system</label>
+          <button id="refreshLogs" class="secondary">刷新</button>
+          <button id="exportLogs">导出日志</button>
+        </div>
+        <div id="logsArea" class="logs-area"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+  <div id="authModal" class="img-modal">
+    <div class="conv-modal-content auth-modal-content">
+      <div class="section-title">访问校验</div>
+      <div class="help">请输入访问Token后进入页面。</div>
+      <div class="row">
+        <input id="authTokenInput" type="password" placeholder="访问Token" />
+        <button id="authLoginBtn">进入</button>
+      </div>
+      <div id="authTip" class="help"></div>
+    </div>
+  </div>
+  <div id="changePasswordModal" class="img-modal">
+    <div class="conv-modal-content auth-modal-content">
+      <div class="section-title">设置新密码</div>
+      <div class="help">检测到您正在使用默认密码，请立即设置一个新的访问密码以确保安全。</div>
+      <div class="row"><input id="newPasswordInput" type="password" placeholder="新密码（至少4位）" /></div>
+      <div class="row"><input id="confirmPasswordInput" type="password" placeholder="确认新密码" /></div>
+      <div class="row" style="justify-content:flex-end;"><button id="changePasswordBtn">确认设置</button></div>
+      <div id="changePasswordTip" class="help" style="color:#dc2626;"></div>
+    </div>
+  </div>
+  <div id="convManageModal" class="img-modal">
+    <div class="conv-modal-content">
+      <div class="conv-modal-header">
+        <div class="section-title">管理会话（左侧候选 / 右侧显示）</div>
+        <button id="convManageClose" class="secondary">关闭</button>
+      </div>
+      <div class="row conv-search-row">
+        <input id="convSearchKeyword" placeholder="搜索会话：输入完整9或10位ID或名称关键词" />
+        <button id="convSearchBtn">搜索</button>
+        <button id="convSearchClear" class="secondary">清除高亮</button>
+      </div>
+      <div class="conv-manage-grid">
+        <div class="panel">
+          <div class="section-title">候选会话（已拉取）</div>
+          <div id="allConvList" class="list conv-manage-list"></div>
+        </div>
+        <div class="panel">
+          <div class="section-title">显示会话（左侧栏）</div>
+          <div id="selectedConvList" class="list conv-manage-list"></div>
+        </div>
+      </div>
+      <div class="row">
+        <button id="convManageSave">保存并应用</button>
+      </div>
+    </div>
+  </div>
+  <div id="imgModal" class="img-modal">
+    <div class="img-modal-content">
+      <button id="imgModalClose" class="img-close-btn">关闭</button>
+      <img id="imgModalView" alt="preview" referrerpolicy="no-referrer" />
+    </div>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
